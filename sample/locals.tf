@@ -10,12 +10,12 @@ locals {
     data = {
       alias                   = "alias/${local.prefix}-kms-data"
       description             = "Data key of the DynamoDB tables"
-      deletion_window_in_days = 7
+      deletion_window_in_days = var.key_deletion_window_in_days
     }
     objects = {
       alias                   = "alias/${local.prefix}-kms-objects"
       description             = "Objects key of the S3 buckets"
-      deletion_window_in_days = 7
+      deletion_window_in_days = var.key_deletion_window_in_days
     }
   }
 
