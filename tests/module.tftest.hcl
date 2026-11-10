@@ -436,3 +436,46 @@ run "lets_firehose_write_delivery_logs_when_asked" {
     error_message = "Firehose writes only to the streams of its log group."
   }
 }
+
+# Apply against the mocked provider, so computed attributes get values. Nothing reaches AWS.
+run "exposes_key_and_role_arns" {
+  command = apply
+
+  providers = {
+    aws.project = aws.project
+  }
+
+  override_resource {
+    target          = aws_kms_key.keys["data"]
+    override_during = apply
+    values          = { arn = "arn:aws:kms:us-east-1:111122223333:key/data" }
+  }
+
+  override_resource {
+    target          = aws_kms_key.keys["objects"]
+    override_during = apply
+    values          = { arn = "arn:aws:kms:us-east-1:111122223333:key/objects" }
+  }
+
+  assert {
+    condition     = output.data_key_arn == "arn:aws:kms:us-east-1:111122223333:key/data" && output.objects_key_arn == "arn:aws:kms:us-east-1:111122223333:key/objects"
+    error_message = "Key outputs must expose the ARN of each key."
+  }
+
+  assert {
+    condition = (
+      output.ingestion_function_role_arn == aws_iam_role.roles["ingestion_function"].arn &&
+      output.iot_rule_role_arn == aws_iam_role.roles["iot_rule"].arn &&
+      output.firehose_role_arn == aws_iam_role.roles["firehose_delivery"].arn &&
+      output.focus_function_role_arn == aws_iam_role.roles["focus_function"].arn
+    )
+    error_message = "Each role output must expose the ARN of its own role."
+  }
+
+  assert {
+    condition = length(toset([
+      output.ingestion_function_role_arn, output.iot_rule_role_arn, output.firehose_role_arn, output.focus_function_role_arn,
+    ])) == 4
+    error_message = "Role outputs must be four different roles."
+  }
+}
