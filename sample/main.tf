@@ -9,4 +9,7 @@ module "this" {
   client      = var.client
   project     = var.project
   environment = var.environment
+
+  keys  = local.keys
+  roles = local.roles
 }
