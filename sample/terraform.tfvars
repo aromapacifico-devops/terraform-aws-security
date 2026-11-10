@@ -4,6 +4,8 @@ project     = "aroma"
 environment = "dev"
 region      = "us-east-1"
 
+key_deletion_window_in_days = 7
+
 common_tags = {
   Client      = "fnc"
   Project     = "aroma"

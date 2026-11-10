@@ -1,1 +1,279 @@
 # Local values and transformations of the module.
+locals {
+  # Targets each role purpose must receive (required) and may receive (allowed).
+  role_targets = {
+    ingestion_function = {
+      required = ["queue_arns", "write_table_arns", "read_table_arns", "topic_arns", "log_group_arns"]
+      allowed  = ["queue_arns", "write_table_arns", "read_table_arns", "topic_arns", "log_group_arns"]
+    }
+    iot_rule = {
+      required = ["queue_arns", "stream_arns", "source_arn"]
+      allowed  = ["queue_arns", "stream_arns", "source_arn"]
+    }
+    firehose_delivery = {
+      required = ["bucket_arns"]
+      allowed  = ["bucket_arns", "log_group_arns"]
+    }
+    focus_function = {
+      required = ["bucket_arns", "object_prefix", "model_arns", "write_table_arns", "dead_letter_queue_arns", "log_group_arns"]
+      allowed  = ["bucket_arns", "object_prefix", "model_arns", "write_table_arns", "dead_letter_queue_arns", "log_group_arns"]
+    }
+  }
+
+  account_id = data.aws_caller_identity.current.account_id
+  partition  = data.aws_partition.current.partition
+  region     = data.aws_region.current.region
+
+  # Key policy per key. The root statement keeps access under IAM policies, as the AWS default key
+  # policy does. Optional service principals may use the key for this account only.
+  key_policies = {
+    for purpose, key in var.keys : purpose => {
+      Version = "2012-10-17"
+      Statement = concat(
+        [{
+          Sid       = "EnableIamPolicies"
+          Effect    = "Allow"
+          Principal = { AWS = "arn:${local.partition}:iam::${local.account_id}:root" }
+          Action    = "kms:*"
+          Resource  = "*"
+        }],
+        length(key.service_principals) == 0 ? [] : [{
+          Sid       = "AllowServicesOfThisAccount"
+          Effect    = "Allow"
+          Principal = { Service = key.service_principals }
+          Action = [
+            "kms:Decrypt",
+            "kms:DescribeKey",
+            "kms:Encrypt",
+            "kms:GenerateDataKey",
+            "kms:GenerateDataKeyWithoutPlaintext",
+            "kms:ReEncryptFrom",
+            "kms:ReEncryptTo",
+          ]
+          Resource  = "*"
+          Condition = { StringEquals = { "aws:SourceAccount" = local.account_id } }
+        }]
+      )
+    }
+  }
+
+  role_services = {
+    ingestion_function = "lambda.amazonaws.com"
+    iot_rule           = "iot.amazonaws.com"
+    firehose_delivery  = "firehose.amazonaws.com"
+    focus_function     = "lambda.amazonaws.com"
+  }
+
+  # Trust policy per role. IoT Core passes the rule ARN, so its role accepts only that rule of this
+  # account. AWS documents no such condition for Lambda execution roles or Firehose delivery roles.
+  trust_policies = {
+    for purpose, role in var.roles : purpose => {
+      Version = "2012-10-17"
+      Statement = [merge(
+        {
+          Effect    = "Allow"
+          Principal = { Service = local.role_services[purpose] }
+          Action    = "sts:AssumeRole"
+        },
+        purpose != "iot_rule" ? {} : {
+          Condition = {
+            StringEquals = { "aws:SourceAccount" = local.account_id }
+            ArnLike      = { "aws:SourceArn" = role.source_arn }
+          }
+        }
+      )]
+    }
+  }
+
+  key_arns = { for purpose, key in aws_kms_key.keys : purpose => key.arn }
+  via      = { for service in ["dynamodb", "s3", "sns", "sqs"] : service => "${service}.${local.region}.amazonaws.com" }
+
+  ingestion = var.roles["ingestion_function"]
+  iot_rule  = var.roles["iot_rule"]
+  firehose  = var.roles["firehose_delivery"]
+  focus     = var.roles["focus_function"]
+
+  # KMS actions a principal needs to read and write items of a table under a customer managed key.
+  dynamodb_key_actions = ["kms:Decrypt", "kms:DescribeKey", "kms:Encrypt", "kms:GenerateDataKey"]
+
+  # Permission statements per role, from the permission matrix of the card. Every KMS statement
+  # names one key of this module and the service that may use it on the role's behalf.
+  role_statements = {
+    ingestion_function = [
+      {
+        Sid      = "ConsumeIngestionQueue"
+        Effect   = "Allow"
+        Action   = ["sqs:DeleteMessage", "sqs:GetQueueAttributes", "sqs:ReceiveMessage"]
+        Resource = local.ingestion.queue_arns
+      },
+      {
+        Sid      = "WriteReadingsAndAlerts"
+        Effect   = "Allow"
+        Action   = ["dynamodb:BatchWriteItem", "dynamodb:PutItem"]
+        Resource = local.ingestion.write_table_arns
+      },
+      {
+        Sid      = "ReadRanges"
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem", "dynamodb:Query"]
+        Resource = concat(local.ingestion.read_table_arns, [for arn in local.ingestion.read_table_arns : "${arn}/index/*"])
+      },
+      {
+        Sid      = "PublishAlerts"
+        Effect   = "Allow"
+        Action   = ["sns:Publish"]
+        Resource = local.ingestion.topic_arns
+      },
+      {
+        Sid       = "UseDataKeyThroughSqs"
+        Effect    = "Allow"
+        Action    = ["kms:Decrypt"]
+        Resource  = [local.key_arns["data"]]
+        Condition = { StringEquals = { "kms:ViaService" = local.via["sqs"] } }
+      },
+      {
+        Sid       = "UseDataKeyThroughDynamodb"
+        Effect    = "Allow"
+        Action    = local.dynamodb_key_actions
+        Resource  = [local.key_arns["data"]]
+        Condition = { StringEquals = { "kms:ViaService" = local.via["dynamodb"] } }
+      },
+      {
+        Sid       = "UseDataKeyThroughSns"
+        Effect    = "Allow"
+        Action    = ["kms:Decrypt", "kms:GenerateDataKey"]
+        Resource  = [local.key_arns["data"]]
+        Condition = { StringEquals = { "kms:ViaService" = local.via["sns"] } }
+      },
+      {
+        Sid      = "WriteOwnLogs"
+        Effect   = "Allow"
+        Action   = ["logs:CreateLogStream", "logs:PutLogEvents"]
+        Resource = [for arn in local.ingestion.log_group_arns : "${arn}:*"]
+      },
+    ]
+
+    iot_rule = [
+      {
+        Sid      = "SendToIngestionQueue"
+        Effect   = "Allow"
+        Action   = ["sqs:SendMessage"]
+        Resource = local.iot_rule.queue_arns
+      },
+      {
+        Sid       = "UseDataKeyThroughSqs"
+        Effect    = "Allow"
+        Action    = ["kms:Decrypt", "kms:GenerateDataKey"]
+        Resource  = [local.key_arns["data"]]
+        Condition = { StringEquals = { "kms:ViaService" = local.via["sqs"] } }
+      },
+      {
+        Sid      = "PutToArchiveStream"
+        Effect   = "Allow"
+        Action   = ["firehose:PutRecord"]
+        Resource = local.iot_rule.stream_arns
+      },
+    ]
+
+    firehose_delivery = concat(
+      [
+        {
+          Sid      = "WriteArchiveObjects"
+          Effect   = "Allow"
+          Action   = ["s3:AbortMultipartUpload", "s3:GetObject", "s3:PutObject"]
+          Resource = [for arn in local.firehose.bucket_arns : "${arn}/*"]
+        },
+        {
+          Sid      = "ReadArchiveBucket"
+          Effect   = "Allow"
+          Action   = ["s3:GetBucketLocation", "s3:ListBucket", "s3:ListBucketMultipartUploads"]
+          Resource = local.firehose.bucket_arns
+        },
+        {
+          Sid      = "UseObjectsKeyThroughS3"
+          Effect   = "Allow"
+          Action   = ["kms:Decrypt", "kms:GenerateDataKey"]
+          Resource = [local.key_arns["objects"]]
+          Condition = {
+            StringEquals = {
+              "kms:ViaService"                   = local.via["s3"]
+              "kms:EncryptionContext:aws:s3:arn" = local.firehose.bucket_arns
+            }
+          }
+        },
+      ],
+      length(local.firehose.log_group_arns) == 0 ? [] : [{
+        Sid      = "WriteDeliveryLogs"
+        Effect   = "Allow"
+        Action   = ["logs:PutLogEvents"]
+        Resource = [for arn in local.firehose.log_group_arns : "${arn}:log-stream:*"]
+      }]
+    )
+
+    focus_function = [
+      {
+        Sid      = "ReadFlightObjects"
+        Effect   = "Allow"
+        Action   = ["s3:GetObject"]
+        Resource = [for arn in local.focus.bucket_arns : "${arn}/${local.focus.object_prefix}*"]
+      },
+      {
+        Sid      = "UseObjectsKeyThroughS3"
+        Effect   = "Allow"
+        Action   = ["kms:Decrypt"]
+        Resource = [local.key_arns["objects"]]
+        Condition = {
+          StringEquals = {
+            "kms:ViaService"                   = local.via["s3"]
+            "kms:EncryptionContext:aws:s3:arn" = local.focus.bucket_arns
+          }
+        }
+      },
+      {
+        # DetectLabels has no resource type, so IAM accepts only "*" here.
+        Sid      = "DetectLabels"
+        Effect   = "Allow"
+        Action   = ["rekognition:DetectLabels"]
+        Resource = ["*"]
+      },
+      {
+        Sid      = "InvokeFocusModel"
+        Effect   = "Allow"
+        Action   = ["bedrock:InvokeModel"]
+        Resource = local.focus.model_arns
+      },
+      {
+        Sid      = "WriteCases"
+        Effect   = "Allow"
+        Action   = ["dynamodb:PutItem"]
+        Resource = local.focus.write_table_arns
+      },
+      {
+        Sid       = "UseDataKeyThroughDynamodb"
+        Effect    = "Allow"
+        Action    = local.dynamodb_key_actions
+        Resource  = [local.key_arns["data"]]
+        Condition = { StringEquals = { "kms:ViaService" = local.via["dynamodb"] } }
+      },
+      {
+        Sid      = "SendToDeadLetterQueue"
+        Effect   = "Allow"
+        Action   = ["sqs:SendMessage"]
+        Resource = local.focus.dead_letter_queue_arns
+      },
+      {
+        Sid       = "UseDataKeyThroughSqs"
+        Effect    = "Allow"
+        Action    = ["kms:Decrypt", "kms:GenerateDataKey"]
+        Resource  = [local.key_arns["data"]]
+        Condition = { StringEquals = { "kms:ViaService" = local.via["sqs"] } }
+      },
+      {
+        Sid      = "WriteOwnLogs"
+        Effect   = "Allow"
+        Action   = ["logs:CreateLogStream", "logs:PutLogEvents"]
+        Resource = [for arn in local.focus.log_group_arns : "${arn}:*"]
+      },
+    ]
+  }
+}
