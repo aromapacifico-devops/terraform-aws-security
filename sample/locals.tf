@@ -39,9 +39,10 @@ locals {
       bucket_arns = ["arn:${local.partition}:s3:::${local.prefix}-s3-archive"]
     }
     focus_function = {
-      name          = "${local.prefix}-role-focus"
-      bucket_arns   = ["arn:${local.partition}:s3:::${local.prefix}-s3-flights"]
-      object_prefix = "focus/"
+      name              = "${local.prefix}-role-focus"
+      bucket_arns       = ["arn:${local.partition}:s3:::${local.prefix}-s3-flights"]
+      object_prefix     = "focus/"
+      restricted_prefix = "restricted/"
       model_arns = [
         "arn:${local.partition}:bedrock:${local.arn_tail}:inference-profile/us.amazon.nova-2-lite-v1:0",
         "arn:${local.partition}:bedrock:us-east-1::foundation-model/amazon.nova-2-lite-v1:0",

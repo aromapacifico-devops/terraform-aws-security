@@ -71,6 +71,7 @@ variables {
       name                   = "fnc-aroma-test-role-focus"
       bucket_arns            = ["arn:aws:s3:::fnc-aroma-test-s3-flights"]
       object_prefix          = "focus/"
+      restricted_prefix      = "restricted/"
       model_arns             = ["arn:aws:bedrock:us-east-1:111122223333:inference-profile/us.amazon.nova-2-lite-v1:0", "arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-2-lite-v1:0"]
       write_table_arns       = ["arn:aws:dynamodb:us-east-1:111122223333:table/fnc-aroma-test-ddb-cases"]
       dead_letter_queue_arns = ["arn:aws:sqs:us-east-1:111122223333:fnc-aroma-test-sqs-focus-dlq"]
@@ -394,9 +395,9 @@ run "grants_least_privilege_per_role" {
 
   assert {
     condition = [
-      for statement in jsondecode(aws_iam_role_policy.roles["focus_function"].policy).Statement : statement.Resource if statement.Sid == "ReadFlightObjects"
+      for statement in jsondecode(aws_iam_role_policy.roles["focus_function"].policy).Statement : statement.Resource if statement.Sid == "ReadAndRemoveFlightObjects"
     ][0] == ["arn:aws:s3:::fnc-aroma-test-s3-flights/focus/*"]
-    error_message = "The focus role reads only its prefix."
+    error_message = "The focus role reads and removes objects only in its prefix."
   }
 
   assert {
@@ -478,4 +479,54 @@ run "exposes_key_and_role_arns" {
     ])) == 4
     error_message = "Role outputs must be four different roles."
   }
+}
+
+run "lets_the_focus_role_move_objects_with_people" {
+  command = plan
+
+  providers = {
+    aws.project = aws.project
+  }
+
+  assert {
+    condition = [
+      for statement in jsondecode(aws_iam_role_policy.roles["focus_function"].policy).Statement : statement.Resource if statement.Sid == "WriteRestrictedObjects"
+    ] == [["arn:aws:s3:::fnc-aroma-test-s3-flights/restricted/*"]]
+    error_message = "The focus role writes only to the restricted prefix."
+  }
+
+  assert {
+    condition = [
+      for statement in jsondecode(aws_iam_role_policy.roles["focus_function"].policy).Statement : statement.Action if statement.Sid == "UseObjectsKeyThroughS3"
+    ] == [["kms:Decrypt", "kms:GenerateDataKey"]]
+    error_message = "Copying an encrypted object needs decrypt and generate data key on the objects key."
+  }
+}
+
+run "rejects_a_restricted_prefix_inside_the_focus_prefix" {
+  command = plan
+
+  providers = {
+    aws.project = aws.project
+  }
+
+  variables {
+    roles = merge(var.roles, { focus_function = merge(var.roles.focus_function, { restricted_prefix = "focus/restricted/" }) })
+  }
+
+  expect_failures = [var.roles]
+}
+
+run "rejects_a_focus_role_without_a_restricted_prefix" {
+  command = plan
+
+  providers = {
+    aws.project = aws.project
+  }
+
+  variables {
+    roles = merge(var.roles, { focus_function = merge(var.roles.focus_function, { restricted_prefix = null }) })
+  }
+
+  expect_failures = [var.roles]
 }

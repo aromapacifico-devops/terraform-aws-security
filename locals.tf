@@ -15,8 +15,8 @@ locals {
       allowed  = ["bucket_arns", "log_group_arns"]
     }
     focus_function = {
-      required = ["bucket_arns", "object_prefix", "model_arns", "write_table_arns", "dead_letter_queue_arns", "log_group_arns"]
-      allowed  = ["bucket_arns", "object_prefix", "model_arns", "write_table_arns", "dead_letter_queue_arns", "log_group_arns"]
+      required = ["bucket_arns", "object_prefix", "restricted_prefix", "model_arns", "write_table_arns", "dead_letter_queue_arns", "log_group_arns"]
+      allowed  = ["bucket_arns", "object_prefix", "restricted_prefix", "model_arns", "write_table_arns", "dead_letter_queue_arns", "log_group_arns"]
     }
   }
 
@@ -212,15 +212,22 @@ locals {
 
     focus_function = [
       {
-        Sid      = "ReadFlightObjects"
+        # An object with a person is copied to the restricted prefix and deleted from the focus prefix.
+        Sid      = "ReadAndRemoveFlightObjects"
         Effect   = "Allow"
-        Action   = ["s3:GetObject"]
+        Action   = ["s3:DeleteObject", "s3:GetObject"]
         Resource = [for arn in local.focus.bucket_arns : "${arn}/${local.focus.object_prefix}*"]
+      },
+      {
+        Sid      = "WriteRestrictedObjects"
+        Effect   = "Allow"
+        Action   = ["s3:PutObject"]
+        Resource = [for arn in local.focus.bucket_arns : "${arn}/${local.focus.restricted_prefix}*"]
       },
       {
         Sid      = "UseObjectsKeyThroughS3"
         Effect   = "Allow"
-        Action   = ["kms:Decrypt"]
+        Action   = ["kms:Decrypt", "kms:GenerateDataKey"]
         Resource = [local.key_arns["objects"]]
         Condition = {
           StringEquals = {

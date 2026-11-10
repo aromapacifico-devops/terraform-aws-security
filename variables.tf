@@ -96,6 +96,7 @@ variable "roles" {
     stream_arns            = optional(list(string), [])
     bucket_arns            = optional(list(string), [])
     object_prefix          = optional(string)
+    restricted_prefix      = optional(string)
     model_arns             = optional(list(string), [])
     dead_letter_queue_arns = optional(list(string), [])
     log_group_arns         = optional(list(string), [])
@@ -184,6 +185,25 @@ variable "roles" {
       role.object_prefix == null || can(regex("^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*/$", role.object_prefix))
     ])
     error_message = "object_prefix must be a relative path that ends with / and holds no wildcard, such as flights/focus/."
+  }
+
+  validation {
+    condition = alltrue([
+      for role in values(var.roles) :
+      role.restricted_prefix == null || can(regex("^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*/$", role.restricted_prefix))
+    ])
+    error_message = "restricted_prefix must be a relative path that ends with / and holds no wildcard, such as restricted/."
+  }
+
+  validation {
+    condition = alltrue([
+      for role in values(var.roles) :
+      role.object_prefix == null || role.restricted_prefix == null || (
+        !startswith(coalesce(role.object_prefix, "-"), coalesce(role.restricted_prefix, "-")) &&
+        !startswith(coalesce(role.restricted_prefix, "-"), coalesce(role.object_prefix, "-"))
+      )
+    ])
+    error_message = "object_prefix and restricted_prefix must not contain each other, so a moved object never lands where it is read."
   }
 
   validation {
