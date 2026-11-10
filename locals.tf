@@ -19,4 +19,41 @@ locals {
       allowed  = ["bucket_arns", "object_prefix", "model_arns", "write_table_arns", "dead_letter_queue_arns", "log_group_arns"]
     }
   }
+
+  account_id = data.aws_caller_identity.current.account_id
+  partition  = data.aws_partition.current.partition
+  region     = data.aws_region.current.region
+
+  # Key policy per key. The root statement keeps access under IAM policies, as the AWS default key
+  # policy does. Optional service principals may use the key for this account only.
+  key_policies = {
+    for purpose, key in var.keys : purpose => {
+      Version = "2012-10-17"
+      Statement = concat(
+        [{
+          Sid       = "EnableIamPolicies"
+          Effect    = "Allow"
+          Principal = { AWS = "arn:${local.partition}:iam::${local.account_id}:root" }
+          Action    = "kms:*"
+          Resource  = "*"
+        }],
+        length(key.service_principals) == 0 ? [] : [{
+          Sid       = "AllowServicesOfThisAccount"
+          Effect    = "Allow"
+          Principal = { Service = key.service_principals }
+          Action = [
+            "kms:Decrypt",
+            "kms:DescribeKey",
+            "kms:Encrypt",
+            "kms:GenerateDataKey",
+            "kms:GenerateDataKeyWithoutPlaintext",
+            "kms:ReEncryptFrom",
+            "kms:ReEncryptTo",
+          ]
+          Resource  = "*"
+          Condition = { StringEquals = { "aws:SourceAccount" = local.account_id } }
+        }]
+      )
+    }
+  }
 }

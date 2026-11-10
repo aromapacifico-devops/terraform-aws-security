@@ -1,6 +1,21 @@
 # Plan-time tests against a mocked provider. They need no AWS account.
 mock_provider "aws" {
   alias = "project"
+
+  override_data {
+    target = data.aws_caller_identity.current
+    values = { account_id = "111122223333" }
+  }
+
+  override_data {
+    target = data.aws_partition.current
+    values = { partition = "aws" }
+  }
+
+  override_data {
+    target = data.aws_region.current
+    values = { region = "us-east-1" }
+  }
 }
 
 variables {
@@ -198,4 +213,70 @@ run "rejects_a_role_name_of_29_characters" {
   }
 
   expect_failures = [var.roles]
+}
+
+run "creates_two_rotating_keys_with_aliases" {
+  command = plan
+
+  providers = {
+    aws.project = aws.project
+  }
+
+  assert {
+    condition     = length(aws_kms_key.keys) == 2 && alltrue([for key in aws_kms_key.keys : key.enable_key_rotation])
+    error_message = "Both keys must exist with rotation on."
+  }
+
+  assert {
+    condition     = aws_kms_key.keys["data"].deletion_window_in_days == 7 && aws_kms_key.keys["objects"].deletion_window_in_days == 7
+    error_message = "The deletion window must come from the input."
+  }
+
+  assert {
+    condition     = aws_kms_alias.keys["data"].name == "alias/fnc-aroma-test-kms-data" && aws_kms_alias.keys["objects"].name == "alias/fnc-aroma-test-kms-objects"
+    error_message = "Aliases must match the names the root builds."
+  }
+
+  assert {
+    condition     = aws_kms_key.keys["data"].tags["Name"] == "fnc-aroma-test-kms-data"
+    error_message = "Each key must carry a Name tag."
+  }
+
+  assert {
+    condition = jsondecode(aws_kms_key.keys["data"].policy).Statement == [{
+      Sid       = "EnableIamPolicies"
+      Effect    = "Allow"
+      Principal = { AWS = "arn:aws:iam::111122223333:root" }
+      Action    = "kms:*"
+      Resource  = "*"
+    }]
+    error_message = "Without service principals the key policy holds only the account root statement."
+  }
+}
+
+run "lets_listed_services_of_this_account_use_a_key" {
+  command = plan
+
+  providers = {
+    aws.project = aws.project
+  }
+
+  variables {
+    keys = merge(var.keys, { data = merge(var.keys.data, { service_principals = ["logs.us-east-1.amazonaws.com"] }) })
+  }
+
+  assert {
+    condition     = jsondecode(aws_kms_key.keys["data"].policy).Statement[1].Principal.Service == ["logs.us-east-1.amazonaws.com"]
+    error_message = "The listed service must be the principal of the second statement."
+  }
+
+  assert {
+    condition     = jsondecode(aws_kms_key.keys["data"].policy).Statement[1].Condition.StringEquals["aws:SourceAccount"] == "111122223333"
+    error_message = "Service use must be limited to this account."
+  }
+
+  assert {
+    condition     = length(jsondecode(aws_kms_key.keys["objects"].policy).Statement) == 1
+    error_message = "A key without service principals must not gain a service statement."
+  }
 }
