@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## [0.4.0]
+
+### Added
+
+- Roles of alert delivery. The delivery status function writes the push and SMS status of each alert, the delivery check function checks each alert after 5 minutes and sends the urgent SMS, and two service roles let SNS and End User Messaging SMS write their status logs.
+- The ingestion function role reads the farm table, updates alert state and delivery fields through conditional updates, and sends a check message to the delivery check queue.
+- The Firehose delivery role reads the archive schema in the Glue catalog, which Parquet conversion needs.
+- Inputs `push_application_arns`, `send_queue_arns`, `glue_table_arns` and `sms_resource_arns`, and four role ARN outputs.
+
+### Changed
+
+- The ingestion function role publishes to the phone endpoints of the push platform applications in place of a topic, and `topic_arns` is removed. Its data key use through SNS goes with it.
+- `roles` requires the purposes `delivery_status_function`, `delivery_check_function`, `push_status_logs` and `sms_status_logs`, and `firehose_delivery` requires `glue_table_arns`.
+
 ## [0.3.0]
 
 ### Added

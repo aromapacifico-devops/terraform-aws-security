@@ -53,9 +53,11 @@ variables {
       name             = "fnc-aroma-test-role-ingest"
       queue_arns       = ["arn:aws:sqs:us-east-1:111122223333:fnc-aroma-test-sqs-ingest"]
       write_table_arns = ["arn:aws:dynamodb:us-east-1:111122223333:table/fnc-aroma-test-ddb-readings", "arn:aws:dynamodb:us-east-1:111122223333:table/fnc-aroma-test-ddb-alerts"]
-      read_table_arns  = ["arn:aws:dynamodb:us-east-1:111122223333:table/fnc-aroma-test-ddb-ranges"]
-      topic_arns       = ["arn:aws:sns:us-east-1:111122223333:fnc-aroma-test-sns-alerts"]
+      read_table_arns  = ["arn:aws:dynamodb:us-east-1:111122223333:table/fnc-aroma-test-ddb-ranges", "arn:aws:dynamodb:us-east-1:111122223333:table/fnc-aroma-test-ddb-farms"]
       log_group_arns   = ["arn:aws:logs:us-east-1:111122223333:log-group:/aws/lambda/fnc-aroma-test-fn-ingest"]
+
+      push_application_arns = ["arn:aws:sns:us-east-1:111122223333:app/GCM/fnc-aroma-test-push-fcm"]
+      send_queue_arns       = ["arn:aws:sqs:us-east-1:111122223333:fnc-aroma-test-sqs-dlvcheck"]
     }
     iot_rule = {
       name        = "fnc-aroma-test-role-iotrule"
@@ -64,8 +66,9 @@ variables {
       source_arn  = "arn:aws:iot:us-east-1:111122223333:rule/fnc_aroma_test_rule_telemetry"
     }
     firehose_delivery = {
-      name        = "fnc-aroma-test-role-firehose"
-      bucket_arns = ["arn:aws:s3:::fnc-aroma-test-s3-archive"]
+      name            = "fnc-aroma-test-role-firehose"
+      bucket_arns     = ["arn:aws:s3:::fnc-aroma-test-s3-archive"]
+      glue_table_arns = ["arn:aws:glue:us-east-1:111122223333:table/fnc_aroma_test_telemetry/readings"]
     }
     focus_function = {
       name                   = "fnc-aroma-test-role-focus"
@@ -76,6 +79,31 @@ variables {
       write_table_arns       = ["arn:aws:dynamodb:us-east-1:111122223333:table/fnc-aroma-test-ddb-cases"]
       dead_letter_queue_arns = ["arn:aws:sqs:us-east-1:111122223333:fnc-aroma-test-sqs-focus-dlq"]
       log_group_arns         = ["arn:aws:logs:us-east-1:111122223333:log-group:/aws/lambda/fnc-aroma-test-fn-focus"]
+    }
+    delivery_status_function = {
+      name             = "fnc-aroma-test-role-dlvstat"
+      write_table_arns = ["arn:aws:dynamodb:us-east-1:111122223333:table/fnc-aroma-test-ddb-alerts"]
+      log_group_arns   = ["arn:aws:logs:us-east-1:111122223333:log-group:/aws/lambda/fnc-aroma-test-fn-dlvstatus"]
+    }
+    delivery_check_function = {
+      name              = "fnc-aroma-test-role-dlvcheck"
+      queue_arns        = ["arn:aws:sqs:us-east-1:111122223333:fnc-aroma-test-sqs-dlvcheck"]
+      write_table_arns  = ["arn:aws:dynamodb:us-east-1:111122223333:table/fnc-aroma-test-ddb-alerts"]
+      read_table_arns   = ["arn:aws:dynamodb:us-east-1:111122223333:table/fnc-aroma-test-ddb-farms"]
+      sms_resource_arns = ["arn:aws:sms-voice:us-east-1:111122223333:configuration-set/fnc-aroma-test-sms-alerts"]
+      log_group_arns    = ["arn:aws:logs:us-east-1:111122223333:log-group:/aws/lambda/fnc-aroma-test-fn-dlvcheck"]
+    }
+    push_status_logs = {
+      name = "fnc-aroma-test-role-pushlogs"
+      log_group_arns = [
+        "arn:aws:logs:us-east-1:111122223333:log-group:sns/us-east-1/111122223333/app/GCM/fnc-aroma-test-push-fcm",
+        "arn:aws:logs:us-east-1:111122223333:log-group:sns/us-east-1/111122223333/app/GCM/fnc-aroma-test-push-fcm/Failure",
+      ]
+    }
+    sms_status_logs = {
+      name           = "fnc-aroma-test-role-smslogs"
+      log_group_arns = ["arn:aws:logs:us-east-1:111122223333:log-group:/aws/sms/fnc-aroma-test-status"]
+      source_arn     = "arn:aws:sms-voice:us-east-1:111122223333:configuration-set/fnc-aroma-test-sms-alerts"
     }
   }
 }
@@ -180,7 +208,7 @@ run "rejects_a_target_the_purpose_does_not_use" {
   }
 
   variables {
-    roles = merge(var.roles, { firehose_delivery = merge(var.roles.firehose_delivery, { topic_arns = ["arn:aws:sns:us-east-1:111122223333:fnc-aroma-test-sns-alerts"] }) })
+    roles = merge(var.roles, { firehose_delivery = merge(var.roles.firehose_delivery, { send_queue_arns = ["arn:aws:sqs:us-east-1:111122223333:fnc-aroma-test-sqs-dlvcheck"] }) })
   }
 
   expect_failures = [var.roles]
@@ -294,7 +322,7 @@ run "lets_listed_services_of_this_account_use_a_key" {
   }
 }
 
-run "creates_four_roles_trusted_by_their_service" {
+run "creates_eight_roles_trusted_by_their_service" {
   command = plan
 
   providers = {
@@ -302,17 +330,21 @@ run "creates_four_roles_trusted_by_their_service" {
   }
 
   assert {
-    condition     = length(aws_iam_role.roles) == 4 && aws_iam_role.roles["iot_rule"].name == "fnc-aroma-test-role-iotrule"
+    condition     = length(aws_iam_role.roles) == 8 && aws_iam_role.roles["iot_rule"].name == "fnc-aroma-test-role-iotrule"
     error_message = "Each purpose must create one role with the name the root builds."
   }
 
   assert {
     condition = alltrue([
       for purpose, service in {
-        ingestion_function = "lambda.amazonaws.com"
-        iot_rule           = "iot.amazonaws.com"
-        firehose_delivery  = "firehose.amazonaws.com"
-        focus_function     = "lambda.amazonaws.com"
+        ingestion_function       = "lambda.amazonaws.com"
+        iot_rule                 = "iot.amazonaws.com"
+        firehose_delivery        = "firehose.amazonaws.com"
+        focus_function           = "lambda.amazonaws.com"
+        delivery_status_function = "lambda.amazonaws.com"
+        delivery_check_function  = "lambda.amazonaws.com"
+        push_status_logs         = "sns.amazonaws.com"
+        sms_status_logs          = "sms-voice.amazonaws.com"
       } : jsondecode(aws_iam_role.roles[purpose].assume_role_policy).Statement[0].Principal.Service == service
     ])
     error_message = "Each role must trust only its own service."
@@ -327,11 +359,19 @@ run "creates_four_roles_trusted_by_their_service" {
   }
 
   assert {
+    condition = jsondecode(aws_iam_role.roles["sms_status_logs"].assume_role_policy).Statement[0].Condition == {
+      StringEquals = { "aws:SourceAccount" = "111122223333" }
+      ArnLike      = { "aws:SourceArn" = "arn:aws:sms-voice:us-east-1:111122223333:configuration-set/fnc-aroma-test-sms-alerts" }
+    }
+    error_message = "The SMS status role must accept only the named configuration set of this account."
+  }
+
+  assert {
     condition = alltrue([
-      for purpose in ["ingestion_function", "firehose_delivery", "focus_function"] :
+      for purpose in ["ingestion_function", "firehose_delivery", "focus_function", "delivery_status_function", "delivery_check_function", "push_status_logs"] :
       !contains(keys(jsondecode(aws_iam_role.roles[purpose].assume_role_policy).Statement[0]), "Condition")
     ])
-    error_message = "Lambda and Firehose trust policies carry no condition, as AWS documents them."
+    error_message = "Lambda, Firehose and SNS trust policies carry no condition, as AWS documents them."
   }
 
   assert {
@@ -388,9 +428,14 @@ run "grants_least_privilege_per_role" {
 
   assert {
     condition = [
-      for statement in jsondecode(aws_iam_role_policy.roles["ingestion_function"].policy).Statement : statement.Resource if statement.Sid == "ReadRanges"
-    ][0] == ["arn:aws:dynamodb:us-east-1:111122223333:table/fnc-aroma-test-ddb-ranges", "arn:aws:dynamodb:us-east-1:111122223333:table/fnc-aroma-test-ddb-ranges/index/*"]
-    error_message = "The ingestion role reads only the ranges table and its indexes."
+      for statement in jsondecode(aws_iam_role_policy.roles["ingestion_function"].policy).Statement : statement.Resource if statement.Sid == "ReadRangesAndFarms"
+      ][0] == [
+      "arn:aws:dynamodb:us-east-1:111122223333:table/fnc-aroma-test-ddb-ranges",
+      "arn:aws:dynamodb:us-east-1:111122223333:table/fnc-aroma-test-ddb-farms",
+      "arn:aws:dynamodb:us-east-1:111122223333:table/fnc-aroma-test-ddb-ranges/index/*",
+      "arn:aws:dynamodb:us-east-1:111122223333:table/fnc-aroma-test-ddb-farms/index/*",
+    ]
+    error_message = "The ingestion role reads only the ranges and farm tables and their indexes."
   }
 
   assert {
@@ -468,7 +513,11 @@ run "exposes_key_and_role_arns" {
       output.ingestion_function_role_arn == aws_iam_role.roles["ingestion_function"].arn &&
       output.iot_rule_role_arn == aws_iam_role.roles["iot_rule"].arn &&
       output.firehose_role_arn == aws_iam_role.roles["firehose_delivery"].arn &&
-      output.focus_function_role_arn == aws_iam_role.roles["focus_function"].arn
+      output.focus_function_role_arn == aws_iam_role.roles["focus_function"].arn &&
+      output.delivery_status_function_role_arn == aws_iam_role.roles["delivery_status_function"].arn &&
+      output.delivery_check_function_role_arn == aws_iam_role.roles["delivery_check_function"].arn &&
+      output.push_status_logs_role_arn == aws_iam_role.roles["push_status_logs"].arn &&
+      output.sms_status_logs_role_arn == aws_iam_role.roles["sms_status_logs"].arn
     )
     error_message = "Each role output must expose the ARN of its own role."
   }
@@ -476,8 +525,10 @@ run "exposes_key_and_role_arns" {
   assert {
     condition = length(toset([
       output.ingestion_function_role_arn, output.iot_rule_role_arn, output.firehose_role_arn, output.focus_function_role_arn,
-    ])) == 4
-    error_message = "Role outputs must be four different roles."
+      output.delivery_status_function_role_arn, output.delivery_check_function_role_arn, output.push_status_logs_role_arn,
+      output.sms_status_logs_role_arn,
+    ])) == 8
+    error_message = "Role outputs must be eight different roles."
   }
 }
 
@@ -526,6 +577,149 @@ run "rejects_a_focus_role_without_a_restricted_prefix" {
 
   variables {
     roles = merge(var.roles, { focus_function = merge(var.roles.focus_function, { restricted_prefix = null }) })
+  }
+
+  expect_failures = [var.roles]
+}
+
+run "publishes_alerts_only_to_phone_endpoints_of_the_farm" {
+  command = plan
+
+  providers = {
+    aws.project = aws.project
+  }
+
+  assert {
+    condition = [
+      for statement in jsondecode(aws_iam_role_policy.roles["ingestion_function"].policy).Statement : statement.Resource if statement.Sid == "PublishToFarmPhones"
+    ] == [["arn:aws:sns:us-east-1:111122223333:endpoint/GCM/fnc-aroma-test-push-fcm/*"]]
+    error_message = "The ingestion role publishes only to the endpoints of its platform applications."
+  }
+
+  assert {
+    condition = [
+      for statement in jsondecode(aws_iam_role_policy.roles["ingestion_function"].policy).Statement : statement.Action if statement.Sid == "WriteReadingsAndAlerts"
+    ] == [["dynamodb:BatchWriteItem", "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"]]
+    error_message = "Conditional updates of alert state need GetItem and UpdateItem on the written tables."
+  }
+
+  assert {
+    condition = [
+      for statement in jsondecode(aws_iam_role_policy.roles["ingestion_function"].policy).Statement : statement.Resource if statement.Sid == "SendDeliveryChecks"
+    ] == [["arn:aws:sqs:us-east-1:111122223333:fnc-aroma-test-sqs-dlvcheck"]]
+    error_message = "The ingestion role sends only to the delivery check queue."
+  }
+}
+
+run "lets_firehose_read_only_its_archive_schema" {
+  command = plan
+
+  providers = {
+    aws.project = aws.project
+  }
+
+  assert {
+    condition = [
+      for statement in jsondecode(aws_iam_role_policy.roles["firehose_delivery"].policy).Statement : statement.Resource if statement.Sid == "ReadArchiveSchema"
+      ] == [[
+        "arn:aws:glue:us-east-1:111122223333:catalog",
+        "arn:aws:glue:us-east-1:111122223333:database/fnc_aroma_test_telemetry",
+        "arn:aws:glue:us-east-1:111122223333:table/fnc_aroma_test_telemetry/readings",
+    ]]
+    error_message = "Format conversion reads only the catalog, the database and the table of the archive."
+  }
+}
+
+run "lets_the_delivery_functions_record_and_send" {
+  command = plan
+
+  providers = {
+    aws.project = aws.project
+  }
+
+  assert {
+    condition = [
+      for statement in jsondecode(aws_iam_role_policy.roles["delivery_status_function"].policy).Statement : statement.Resource if statement.Sid == "FindAlertByMessage"
+    ] == [["arn:aws:dynamodb:us-east-1:111122223333:table/fnc-aroma-test-ddb-alerts/index/*"]]
+    error_message = "The status function queries only the indexes of the alerts table."
+  }
+
+  assert {
+    condition = [
+      for statement in jsondecode(aws_iam_role_policy.roles["delivery_check_function"].policy).Statement : statement.Resource if statement.Sid == "SendUrgentSms"
+    ] == [["arn:aws:sms-voice:us-east-1:111122223333:configuration-set/fnc-aroma-test-sms-alerts"]]
+    error_message = "The check function sends SMS only through the listed resources."
+  }
+
+  assert {
+    condition = [
+      for statement in jsondecode(aws_iam_role_policy.roles["push_status_logs"].policy).Statement : statement.Resource if statement.Sid == "WritePushStatus"
+      ] == [[
+        "arn:aws:logs:us-east-1:111122223333:log-group:sns/us-east-1/111122223333/app/GCM/fnc-aroma-test-push-fcm:*",
+        "arn:aws:logs:us-east-1:111122223333:log-group:sns/us-east-1/111122223333/app/GCM/fnc-aroma-test-push-fcm/Failure:*",
+    ]]
+    error_message = "SNS writes push status only to the success and failure groups of its application."
+  }
+
+  assert {
+    condition = [
+      for statement in jsondecode(aws_iam_role_policy.roles["sms_status_logs"].policy).Statement : statement.Resource if statement.Sid == "WriteSmsStatus"
+    ] == [["arn:aws:logs:us-east-1:111122223333:log-group:/aws/sms/fnc-aroma-test-status:*"]]
+    error_message = "End User Messaging SMS writes only to the SMS status group."
+  }
+}
+
+run "rejects_a_topic_as_push_application" {
+  command = plan
+
+  providers = {
+    aws.project = aws.project
+  }
+
+  variables {
+    roles = merge(var.roles, { ingestion_function = merge(var.roles.ingestion_function, { push_application_arns = ["arn:aws:sns:us-east-1:111122223333:fnc-aroma-test-sns-alerts"] }) })
+  }
+
+  expect_failures = [var.roles]
+}
+
+run "rejects_sms_resources_without_a_configuration_set" {
+  command = plan
+
+  providers = {
+    aws.project = aws.project
+  }
+
+  variables {
+    roles = merge(var.roles, { delivery_check_function = merge(var.roles.delivery_check_function, { sms_resource_arns = ["arn:aws:sms-voice:us-east-1:111122223333:pool/pool-1"] }) })
+  }
+
+  expect_failures = [var.roles]
+}
+
+run "rejects_an_iot_rule_as_source_of_sms_status" {
+  command = plan
+
+  providers = {
+    aws.project = aws.project
+  }
+
+  variables {
+    roles = merge(var.roles, { sms_status_logs = merge(var.roles.sms_status_logs, { source_arn = "arn:aws:iot:us-east-1:111122223333:rule/fnc_aroma_test_rule_telemetry" }) })
+  }
+
+  expect_failures = [var.roles]
+}
+
+run "rejects_a_firehose_role_without_a_glue_table" {
+  command = plan
+
+  providers = {
+    aws.project = aws.project
+  }
+
+  variables {
+    roles = merge(var.roles, { firehose_delivery = merge(var.roles.firehose_delivery, { glue_table_arns = [] }) })
   }
 
   expect_failures = [var.roles]

@@ -28,3 +28,23 @@ output "focus_function_role_arn" {
   description = "ARN of the focus confirmation function role."
   value       = module.this.focus_function_role_arn
 }
+
+output "delivery_status_function_role_arn" {
+  description = "ARN of the delivery status function role."
+  value       = module.this.delivery_status_function_role_arn
+}
+
+output "delivery_check_function_role_arn" {
+  description = "ARN of the delivery check function role."
+  value       = module.this.delivery_check_function_role_arn
+}
+
+output "push_status_logs_role_arn" {
+  description = "ARN of the push status logs role."
+  value       = module.this.push_status_logs_role_arn
+}
+
+output "sms_status_logs_role_arn" {
+  description = "ARN of the sms status logs role."
+  value       = module.this.sms_status_logs_role_arn
+}

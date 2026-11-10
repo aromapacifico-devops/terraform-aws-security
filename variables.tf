@@ -86,13 +86,16 @@ variable "keys" {
 }
 
 variable "roles" {
-  description = "Platform roles keyed by purpose (ingestion_function, iot_rule, firehose_delivery, focus_function), with the final role name and the ARNs each role may reach. The module owns the actions of each purpose."
+  description = "Platform roles keyed by purpose (ingestion_function, iot_rule, firehose_delivery, focus_function, delivery_status_function, delivery_check_function, push_status_logs, sms_status_logs), with the final role name and the ARNs each role may reach. The module owns the actions of each purpose."
   type = map(object({
     name                   = string
     queue_arns             = optional(list(string), [])
     write_table_arns       = optional(list(string), [])
     read_table_arns        = optional(list(string), [])
-    topic_arns             = optional(list(string), [])
+    send_queue_arns        = optional(list(string), [])
+    push_application_arns  = optional(list(string), [])
+    glue_table_arns        = optional(list(string), [])
+    sms_resource_arns      = optional(list(string), [])
     stream_arns            = optional(list(string), [])
     bucket_arns            = optional(list(string), [])
     object_prefix          = optional(string)
@@ -105,7 +108,7 @@ variable "roles" {
 
   validation {
     condition     = toset(keys(var.roles)) == toset(keys(local.role_targets))
-    error_message = "roles must hold exactly the purposes ingestion_function, iot_rule, firehose_delivery and focus_function."
+    error_message = "roles must hold exactly the purposes ingestion_function, iot_rule, firehose_delivery, focus_function, delivery_status_function, delivery_check_function, push_status_logs and sms_status_logs."
   }
 
   validation {
@@ -135,11 +138,11 @@ variable "roles" {
   validation {
     condition = alltrue(flatten([
       for role in values(var.roles) : [
-        for arn in concat(role.queue_arns, role.dead_letter_queue_arns) :
+        for arn in concat(role.queue_arns, role.send_queue_arns, role.dead_letter_queue_arns) :
         can(regex("^arn:aws[a-z-]*:sqs:[a-z0-9-]+:[0-9]{12}:[A-Za-z0-9_-]{1,80}(\\.fifo)?$", arn))
       ]
     ]))
-    error_message = "queue_arns and dead_letter_queue_arns must be full SQS queue ARNs with no wildcard."
+    error_message = "queue_arns, send_queue_arns and dead_letter_queue_arns must be full SQS queue ARNs with no wildcard."
   }
 
   validation {
@@ -155,10 +158,37 @@ variable "roles" {
   validation {
     condition = alltrue(flatten([
       for role in values(var.roles) : [
-        for arn in role.topic_arns : can(regex("^arn:aws[a-z-]*:sns:[a-z0-9-]+:[0-9]{12}:[A-Za-z0-9_-]{1,256}(\\.fifo)?$", arn))
+        for arn in role.push_application_arns : can(regex("^arn:aws[a-z-]*:sns:[a-z0-9-]+:[0-9]{12}:app/(GCM|APNS|APNS_SANDBOX)/[A-Za-z0-9_.-]{1,256}$", arn))
       ]
     ]))
-    error_message = "topic_arns must be full SNS topic ARNs with no wildcard."
+    error_message = "push_application_arns must be SNS platform application ARNs for GCM, APNS or APNS_SANDBOX, with no wildcard."
+  }
+
+  validation {
+    condition = alltrue(flatten([
+      for role in values(var.roles) : [
+        for arn in role.glue_table_arns : can(regex("^arn:aws[a-z-]*:glue:[a-z0-9-]+:[0-9]{12}:table/[a-z0-9_]{1,255}/[a-z0-9_]{1,255}$", arn))
+      ]
+    ]))
+    error_message = "glue_table_arns must be Glue table ARNs, table/<database>/<table>, with no wildcard."
+  }
+
+  validation {
+    condition = alltrue(flatten([
+      for role in values(var.roles) : [
+        for arn in role.sms_resource_arns :
+        can(regex("^arn:aws[a-z-]*:sms-voice:[a-z0-9-]+:[0-9]{12}:(configuration-set|phone-number|pool|sender-id)/[A-Za-z0-9_./-]{1,128}$", arn))
+      ]
+    ]))
+    error_message = "sms_resource_arns must be End User Messaging SMS configuration set, phone number, pool or sender ID ARNs, with no wildcard."
+  }
+
+  validation {
+    condition = alltrue([
+      for role in values(var.roles) :
+      length(role.sms_resource_arns) == 0 || anytrue([for arn in role.sms_resource_arns : strcontains(arn, ":configuration-set/")])
+    ])
+    error_message = "sms_resource_arns must include the configuration set that records the SMS events."
   }
 
   validation {
@@ -227,9 +257,13 @@ variable "roles" {
 
   validation {
     condition = alltrue([
-      for role in values(var.roles) :
-      role.source_arn == null || can(regex("^arn:aws[a-z-]*:iot:[a-z0-9-]+:[0-9]{12}:rule/[A-Za-z0-9_]{1,128}$", role.source_arn))
+      for purpose, role in var.roles :
+      role.source_arn == null || (
+        purpose == "iot_rule" ? can(regex("^arn:aws[a-z-]*:iot:[a-z0-9-]+:[0-9]{12}:rule/[A-Za-z0-9_]{1,128}$", role.source_arn)) :
+        purpose == "sms_status_logs" ? can(regex("^arn:aws[a-z-]*:sms-voice:[a-z0-9-]+:[0-9]{12}:configuration-set/[A-Za-z0-9_-]{1,64}$", role.source_arn)) :
+        false
+      )
     ])
-    error_message = "source_arn must be an IoT topic rule ARN. Rule names use only letters, digits and underscores."
+    error_message = "source_arn must be the IoT topic rule ARN for iot_rule, with only letters, digits and underscores in the name, or the End User Messaging SMS configuration set ARN for sms_status_logs."
   }
 }
