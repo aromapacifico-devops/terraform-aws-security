@@ -3,20 +3,36 @@ locals {
   # Targets each role purpose must receive (required) and may receive (allowed).
   role_targets = {
     ingestion_function = {
-      required = ["queue_arns", "write_table_arns", "read_table_arns", "topic_arns", "log_group_arns"]
-      allowed  = ["queue_arns", "write_table_arns", "read_table_arns", "topic_arns", "log_group_arns"]
+      required = ["queue_arns", "write_table_arns", "read_table_arns", "push_application_arns", "send_queue_arns", "log_group_arns"]
+      allowed  = ["queue_arns", "write_table_arns", "read_table_arns", "push_application_arns", "send_queue_arns", "log_group_arns"]
     }
     iot_rule = {
       required = ["queue_arns", "stream_arns", "source_arn"]
       allowed  = ["queue_arns", "stream_arns", "source_arn"]
     }
     firehose_delivery = {
-      required = ["bucket_arns"]
-      allowed  = ["bucket_arns", "log_group_arns"]
+      required = ["bucket_arns", "glue_table_arns"]
+      allowed  = ["bucket_arns", "glue_table_arns", "log_group_arns"]
     }
     focus_function = {
       required = ["bucket_arns", "object_prefix", "restricted_prefix", "model_arns", "write_table_arns", "dead_letter_queue_arns", "log_group_arns"]
       allowed  = ["bucket_arns", "object_prefix", "restricted_prefix", "model_arns", "write_table_arns", "dead_letter_queue_arns", "log_group_arns"]
+    }
+    delivery_status_function = {
+      required = ["write_table_arns", "log_group_arns"]
+      allowed  = ["write_table_arns", "log_group_arns"]
+    }
+    delivery_check_function = {
+      required = ["queue_arns", "write_table_arns", "read_table_arns", "sms_resource_arns", "log_group_arns"]
+      allowed  = ["queue_arns", "write_table_arns", "read_table_arns", "sms_resource_arns", "log_group_arns"]
+    }
+    push_status_logs = {
+      required = ["log_group_arns"]
+      allowed  = ["log_group_arns"]
+    }
+    sms_status_logs = {
+      required = ["log_group_arns", "source_arn"]
+      allowed  = ["log_group_arns", "source_arn"]
     }
   }
 
@@ -58,14 +74,22 @@ locals {
   }
 
   role_services = {
-    ingestion_function = "lambda.amazonaws.com"
-    iot_rule           = "iot.amazonaws.com"
-    firehose_delivery  = "firehose.amazonaws.com"
-    focus_function     = "lambda.amazonaws.com"
+    ingestion_function       = "lambda.amazonaws.com"
+    iot_rule                 = "iot.amazonaws.com"
+    firehose_delivery        = "firehose.amazonaws.com"
+    focus_function           = "lambda.amazonaws.com"
+    delivery_status_function = "lambda.amazonaws.com"
+    delivery_check_function  = "lambda.amazonaws.com"
+    push_status_logs         = "sns.amazonaws.com"
+    sms_status_logs          = "sms-voice.amazonaws.com"
   }
 
-  # Trust policy per role. IoT Core passes the rule ARN, so its role accepts only that rule of this
-  # account. AWS documents no such condition for Lambda execution roles or Firehose delivery roles.
+  # Purposes whose service passes the ARN of the resource acting for it. IoT Core passes the rule, and
+  # End User Messaging SMS passes the configuration set, so those roles accept only that resource of
+  # this account. AWS documents no such condition for Lambda, Firehose or SNS delivery status roles.
+  source_bound = ["iot_rule", "sms_status_logs"]
+
+  # Trust policy per role.
   trust_policies = {
     for purpose, role in var.roles : purpose => {
       Version = "2012-10-17"
@@ -75,7 +99,7 @@ locals {
           Principal = { Service = local.role_services[purpose] }
           Action    = "sts:AssumeRole"
         },
-        purpose != "iot_rule" ? {} : {
+        !contains(local.source_bound, purpose) ? {} : {
           Condition = {
             StringEquals = { "aws:SourceAccount" = local.account_id }
             ArnLike      = { "aws:SourceArn" = role.source_arn }
@@ -86,12 +110,29 @@ locals {
   }
 
   key_arns = { for purpose, key in aws_kms_key.keys : purpose => key.arn }
-  via      = { for service in ["dynamodb", "s3", "sns", "sqs"] : service => "${service}.${local.region}.amazonaws.com" }
+  via      = { for service in ["dynamodb", "s3", "sqs"] : service => "${service}.${local.region}.amazonaws.com" }
 
   ingestion = var.roles["ingestion_function"]
   iot_rule  = var.roles["iot_rule"]
   firehose  = var.roles["firehose_delivery"]
   focus     = var.roles["focus_function"]
+  status    = var.roles["delivery_status_function"]
+  check     = var.roles["delivery_check_function"]
+  push_logs = var.roles["push_status_logs"]
+  sms_logs  = var.roles["sms_status_logs"]
+
+  # A platform application arn:...:app/GCM/<name> owns the endpoints arn:...:endpoint/GCM/<name>/<id>.
+  push_endpoint_arns = [for arn in local.ingestion.push_application_arns : "${replace(arn, ":app/", ":endpoint/")}/*"]
+
+  # Format conversion reads a table of the Glue catalog, which IAM checks against the catalog, the
+  # database and the table.
+  glue_schema_arns = distinct(flatten([
+    for arn in local.firehose.glue_table_arns : [
+      "${regex("^(arn:[^:]+:glue:[^:]+:[0-9]{12}):", arn)[0]}:catalog",
+      "${regex("^(arn:[^:]+:glue:[^:]+:[0-9]{12}):", arn)[0]}:database/${regex(":table/([^/]+)/", arn)[0]}",
+      arn,
+    ]
+  ]))
 
   # KMS actions a principal needs to read and write items of a table under a customer managed key.
   dynamodb_key_actions = ["kms:Decrypt", "kms:DescribeKey", "kms:Encrypt", "kms:GenerateDataKey"]
@@ -107,27 +148,36 @@ locals {
         Resource = local.ingestion.queue_arns
       },
       {
+        # Readings, alert state items and alerts. State items and the delivery fields of an alert change
+        # through conditional updates, which need the current item.
         Sid      = "WriteReadingsAndAlerts"
         Effect   = "Allow"
-        Action   = ["dynamodb:BatchWriteItem", "dynamodb:PutItem"]
+        Action   = ["dynamodb:BatchWriteItem", "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"]
         Resource = local.ingestion.write_table_arns
       },
       {
-        Sid      = "ReadRanges"
+        Sid      = "ReadRangesAndFarms"
         Effect   = "Allow"
         Action   = ["dynamodb:GetItem", "dynamodb:Query"]
         Resource = concat(local.ingestion.read_table_arns, [for arn in local.ingestion.read_table_arns : "${arn}/index/*"])
       },
       {
-        Sid      = "PublishAlerts"
+        # Alerts go straight to the phone endpoints of a farm, with no topic in between.
+        Sid      = "PublishToFarmPhones"
         Effect   = "Allow"
         Action   = ["sns:Publish"]
-        Resource = local.ingestion.topic_arns
+        Resource = local.push_endpoint_arns
+      },
+      {
+        Sid      = "SendDeliveryChecks"
+        Effect   = "Allow"
+        Action   = ["sqs:SendMessage"]
+        Resource = local.ingestion.send_queue_arns
       },
       {
         Sid       = "UseDataKeyThroughSqs"
         Effect    = "Allow"
-        Action    = ["kms:Decrypt"]
+        Action    = ["kms:Decrypt", "kms:GenerateDataKey"]
         Resource  = [local.key_arns["data"]]
         Condition = { StringEquals = { "kms:ViaService" = local.via["sqs"] } }
       },
@@ -137,13 +187,6 @@ locals {
         Action    = local.dynamodb_key_actions
         Resource  = [local.key_arns["data"]]
         Condition = { StringEquals = { "kms:ViaService" = local.via["dynamodb"] } }
-      },
-      {
-        Sid       = "UseDataKeyThroughSns"
-        Effect    = "Allow"
-        Action    = ["kms:Decrypt", "kms:GenerateDataKey"]
-        Resource  = [local.key_arns["data"]]
-        Condition = { StringEquals = { "kms:ViaService" = local.via["sns"] } }
       },
       {
         Sid      = "WriteOwnLogs"
@@ -202,6 +245,12 @@ locals {
           }
         },
       ],
+      [{
+        Sid      = "ReadArchiveSchema"
+        Effect   = "Allow"
+        Action   = ["glue:GetTable", "glue:GetTableVersion", "glue:GetTableVersions"]
+        Resource = local.glue_schema_arns
+      }],
       length(local.firehose.log_group_arns) == 0 ? [] : [{
         Sid      = "WriteDeliveryLogs"
         Effect   = "Allow"
@@ -280,6 +329,115 @@ locals {
         Effect   = "Allow"
         Action   = ["logs:CreateLogStream", "logs:PutLogEvents"]
         Resource = [for arn in local.focus.log_group_arns : "${arn}:*"]
+      },
+    ]
+
+    delivery_status_function = [
+      {
+        Sid      = "RecordDeliveryStatus"
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem", "dynamodb:UpdateItem"]
+        Resource = local.status.write_table_arns
+      },
+      {
+        # The sparse index on push_message_id finds the alert of a status log entry.
+        Sid      = "FindAlertByMessage"
+        Effect   = "Allow"
+        Action   = ["dynamodb:Query"]
+        Resource = [for arn in local.status.write_table_arns : "${arn}/index/*"]
+      },
+      {
+        Sid       = "UseDataKeyThroughDynamodb"
+        Effect    = "Allow"
+        Action    = local.dynamodb_key_actions
+        Resource  = [local.key_arns["data"]]
+        Condition = { StringEquals = { "kms:ViaService" = local.via["dynamodb"] } }
+      },
+      {
+        Sid      = "WriteOwnLogs"
+        Effect   = "Allow"
+        Action   = ["logs:CreateLogStream", "logs:PutLogEvents"]
+        Resource = [for arn in local.status.log_group_arns : "${arn}:*"]
+      },
+    ]
+
+    delivery_check_function = [
+      {
+        Sid      = "ConsumeDeliveryChecks"
+        Effect   = "Allow"
+        Action   = ["sqs:DeleteMessage", "sqs:GetQueueAttributes", "sqs:ReceiveMessage"]
+        Resource = local.check.queue_arns
+      },
+      {
+        Sid      = "RecordDeliveryCheck"
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem", "dynamodb:UpdateItem"]
+        Resource = local.check.write_table_arns
+      },
+      {
+        # The phone number for the SMS stays in the farm record.
+        Sid      = "ReadFarmContact"
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem"]
+        Resource = local.check.read_table_arns
+      },
+      {
+        Sid      = "SendUrgentSms"
+        Effect   = "Allow"
+        Action   = ["sms-voice:SendTextMessage"]
+        Resource = local.check.sms_resource_arns
+      },
+      {
+        Sid       = "UseDataKeyThroughSqs"
+        Effect    = "Allow"
+        Action    = ["kms:Decrypt"]
+        Resource  = [local.key_arns["data"]]
+        Condition = { StringEquals = { "kms:ViaService" = local.via["sqs"] } }
+      },
+      {
+        Sid       = "UseDataKeyThroughDynamodb"
+        Effect    = "Allow"
+        Action    = local.dynamodb_key_actions
+        Resource  = [local.key_arns["data"]]
+        Condition = { StringEquals = { "kms:ViaService" = local.via["dynamodb"] } }
+      },
+      {
+        Sid      = "WriteOwnLogs"
+        Effect   = "Allow"
+        Action   = ["logs:CreateLogStream", "logs:PutLogEvents"]
+        Resource = [for arn in local.check.log_group_arns : "${arn}:*"]
+      },
+    ]
+
+    # SNS writes the delivery status of each push to its success and failure log groups.
+    push_status_logs = [
+      {
+        Sid      = "CreatePushStatusGroups"
+        Effect   = "Allow"
+        Action   = ["logs:CreateLogGroup"]
+        Resource = local.push_logs.log_group_arns
+      },
+      {
+        Sid      = "WritePushStatus"
+        Effect   = "Allow"
+        Action   = ["logs:CreateLogStream", "logs:PutLogEvents"]
+        Resource = [for arn in local.push_logs.log_group_arns : "${arn}:*"]
+      },
+    ]
+
+    # End User Messaging SMS writes the events of its configuration set to the SMS status log group.
+    sms_status_logs = [
+      {
+        Sid      = "DescribeSmsStatusStreams"
+        Effect   = "Allow"
+        Action   = ["logs:DescribeLogStreams"]
+        Resource = concat(local.sms_logs.log_group_arns, [for arn in local.sms_logs.log_group_arns : "${arn}:*"])
+      },
+      {
+        Sid      = "WriteSmsStatus"
+        Effect   = "Allow"
+        Action   = ["logs:CreateLogStream", "logs:PutLogEvents"]
+        Resource = [for arn in local.sms_logs.log_group_arns : "${arn}:*"]
       },
     ]
   }

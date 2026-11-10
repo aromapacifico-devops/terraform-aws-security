@@ -28,3 +28,23 @@ output "focus_function_role_arn" {
   description = "ARN of the focus confirmation function role."
   value       = aws_iam_role.roles["focus_function"].arn
 }
+
+output "delivery_status_function_role_arn" {
+  description = "ARN of the delivery status function role."
+  value       = aws_iam_role.roles["delivery_status_function"].arn
+}
+
+output "delivery_check_function_role_arn" {
+  description = "ARN of the delivery check function role."
+  value       = aws_iam_role.roles["delivery_check_function"].arn
+}
+
+output "push_status_logs_role_arn" {
+  description = "ARN of the role SNS uses to write push delivery status, for the success and failure feedback of each platform application."
+  value       = aws_iam_role.roles["push_status_logs"].arn
+}
+
+output "sms_status_logs_role_arn" {
+  description = "ARN of the role End User Messaging SMS uses to write the events of its configuration set."
+  value       = aws_iam_role.roles["sms_status_logs"].arn
+}
