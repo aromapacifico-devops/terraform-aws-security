@@ -38,7 +38,7 @@ The current release creates the keys and the platform roles of box C05. The endp
 | Ingestion function role | Reads the queue, writes readings and alerts, reads ranges and publishes alerts |
 | IoT rule role | Sends to one queue and one delivery stream |
 | Firehose delivery role | Writes to the telemetry archive |
-| Focus confirmation function role | Reads one bucket prefix, detects labels, invokes one model and writes results |
+| Focus confirmation function role | Reads one bucket prefix, detects labels, moves objects with a person to the restricted prefix, invokes one model and writes results |
 
 Each key has an alias, yearly rotation and an explicit key policy. Each role has one inline policy, and Terraform removes any other inline policy that appears on it.
 
@@ -68,7 +68,8 @@ The module owns the actions of every role, and the root only names the targets. 
 | Firehose delivery | Firehose | Put, get and abort multipart uploads of objects | Archive bucket objects |
 | | | Get location, list objects and multipart uploads | Archive bucket |
 | | | Put log events, only when a log group is given | Its delivery log group |
-| Focus confirmation function | Lambda | Get objects | One prefix of the flight object bucket |
+| Focus confirmation function | Lambda | Get and delete objects | Focus prefix of the flight object bucket |
+| | | Put objects | Restricted prefix of the same bucket |
 | | | Detect labels | Any, as IAM requires |
 | | | Invoke model | Nova 2 Lite inference profile and its foundation model in the Regions the profile routes to |
 | | | Put items | Cases table |
@@ -82,7 +83,7 @@ Key use is granted per service. A role may use the data key only through SQS, Dy
 | Ingestion function | Decrypt through SQS. Decrypt, encrypt, generate data key and describe through DynamoDB. Decrypt and generate data key through SNS | None |
 | IoT rule | Decrypt and generate data key through SQS | None |
 | Firehose delivery | None | Decrypt and generate data key through S3, archive bucket only |
-| Focus confirmation function | Decrypt, encrypt, generate data key and describe through DynamoDB. Decrypt and generate data key through SQS | Decrypt through S3, flight object bucket only |
+| Focus confirmation function | Decrypt, encrypt, generate data key and describe through DynamoDB. Decrypt and generate data key through SQS | Decrypt and generate data key through S3, flight object bucket only |
 
 ## Design choices
 
@@ -94,15 +95,17 @@ Key use is granted per service. A role may use the data key only through SQS, Dy
 
 **Trust conditions.** The IoT rule role requires this account and the named topic rule as source, as AWS recommends for IoT Core. AWS documents no source condition for Lambda execution roles or Firehose delivery roles, and adding one that the service does not send would stop it from assuming the role.
 
+**Objects with a person.** Rekognition runs before any analysis, and when it finds a person the function copies the object to the restricted prefix and deletes the original, so the object never reaches the model. The role may write only to the restricted prefix and delete only in its own prefix. It cannot read the restricted prefix, which stays reserved to the platform operator.
+
 **Account, Region and partition.** The module reads them through generic data sources, so the root passes no account number. These data sources look up nothing outside the provider's own context.
 
 ## Usage
 
-Use the latest released tag in place of `v0.2.0`.
+Use the latest released tag in place of `v0.3.0`.
 
 ```hcl
 module "security" {
-  source = "git::https://github.com/aromapacifico-devops/terraform-aws-security.git?ref=v0.2.0"
+  source = "git::https://github.com/aromapacifico-devops/terraform-aws-security.git?ref=v0.3.0"
 
   providers = {
     aws.project = aws.principal
@@ -133,9 +136,9 @@ The root builds the names of every resource, so it also knows their ARNs. It pas
 | `ingestion_function` | `queue_arns`, `write_table_arns`, `read_table_arns`, `topic_arns`, `log_group_arns` | None |
 | `iot_rule` | `queue_arns`, `stream_arns`, `source_arn` | None |
 | `firehose_delivery` | `bucket_arns` | `log_group_arns` |
-| `focus_function` | `bucket_arns`, `object_prefix`, `model_arns`, `write_table_arns`, `dead_letter_queue_arns`, `log_group_arns` | None |
+| `focus_function` | `bucket_arns`, `object_prefix`, `restricted_prefix`, `model_arns`, `write_table_arns`, `dead_letter_queue_arns`, `log_group_arns` | None |
 
-ARNs are complete, with no wildcard. Bucket ARNs carry no object path, log group ARNs carry no trailing `:*`, and `object_prefix` ends with `/`. IoT rule names accept only letters, digits and underscores, so `source_arn` uses names such as `fnc_aroma_dev_rule_telemetry`.
+ARNs are complete, with no wildcard. Bucket ARNs carry no object path, log group ARNs carry no trailing `:*`, and both prefixes end with `/`. The focus and restricted prefixes may not contain each other, so a moved object never lands where the function reads. IoT rule names accept only letters, digits and underscores, so `source_arn` uses names such as `fnc_aroma_dev_rule_telemetry`.
 
 ## Outputs
 

@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [0.3.0]
+
+### Added
+
+- The focus confirmation function role moves an object with a person to the restricted prefix. It may put objects only there and delete objects only in its own prefix, and it may generate data keys with the objects key through S3.
+
+### Changed
+
+- The focus confirmation function role requires `restricted_prefix`, which may not contain the focus prefix or sit inside it.
+
 ## [0.2.0]
 
 ### Added
