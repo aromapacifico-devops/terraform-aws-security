@@ -16,6 +16,18 @@ mock_provider "aws" {
     target = data.aws_region.current
     values = { region = "us-east-1" }
   }
+
+  override_resource {
+    target          = aws_kms_key.keys["data"]
+    override_during = plan
+    values          = { arn = "arn:aws:kms:us-east-1:111122223333:key/data" }
+  }
+
+  override_resource {
+    target          = aws_kms_key.keys["objects"]
+    override_during = plan
+    values          = { arn = "arn:aws:kms:us-east-1:111122223333:key/objects" }
+  }
 }
 
 variables {
@@ -324,5 +336,103 @@ run "creates_four_roles_trusted_by_their_service" {
   assert {
     condition     = alltrue([for role in values(aws_iam_role.roles) : length(jsondecode(role.assume_role_policy).Statement) == 1])
     error_message = "Each trust policy must hold a single statement."
+  }
+}
+
+run "grants_least_privilege_per_role" {
+  command = plan
+
+  providers = {
+    aws.project = aws.project
+  }
+
+  assert {
+    condition = alltrue(flatten([
+      for policy in values(aws_iam_role_policy.roles) : [
+        for statement in jsondecode(policy.policy).Statement : [for action in statement.Action : !strcontains(action, "*")]
+      ]
+    ]))
+    error_message = "No action may hold a wildcard."
+  }
+
+  assert {
+    condition = [
+      for statement in flatten([for policy in values(aws_iam_role_policy.roles) : jsondecode(policy.policy).Statement]) :
+      statement.Sid if contains(statement.Resource, "*")
+    ] == ["DetectLabels"]
+    error_message = "Only DetectLabels of the focus role may use the resource *."
+  }
+
+  assert {
+    condition = alltrue([
+      for statement in flatten([for policy in values(aws_iam_role_policy.roles) : jsondecode(policy.policy).Statement]) :
+      can(statement.Condition.StringEquals["kms:ViaService"]) && alltrue([
+        for arn in statement.Resource : contains(["arn:aws:kms:us-east-1:111122223333:key/data", "arn:aws:kms:us-east-1:111122223333:key/objects"], arn)
+      ])
+      if anytrue([for action in statement.Action : startswith(action, "kms:")])
+    ])
+    error_message = "KMS statements may reach only this module's keys and only through a named service."
+  }
+
+  assert {
+    condition = alltrue(flatten([
+      for policy in values(aws_iam_role_policy.roles) : [
+        for statement in jsondecode(policy.policy).Statement : [
+          for action in statement.Action : !startswith(action, "kms:") || length(statement.Resource) == 1
+        ]
+      ]
+    ]))
+    error_message = "Each KMS statement must name a single key."
+  }
+
+  assert {
+    condition = [
+      for statement in jsondecode(aws_iam_role_policy.roles["ingestion_function"].policy).Statement : statement.Resource if statement.Sid == "ReadRanges"
+    ][0] == ["arn:aws:dynamodb:us-east-1:111122223333:table/fnc-aroma-test-ddb-ranges", "arn:aws:dynamodb:us-east-1:111122223333:table/fnc-aroma-test-ddb-ranges/index/*"]
+    error_message = "The ingestion role reads only the ranges table and its indexes."
+  }
+
+  assert {
+    condition = [
+      for statement in jsondecode(aws_iam_role_policy.roles["focus_function"].policy).Statement : statement.Resource if statement.Sid == "ReadFlightObjects"
+    ][0] == ["arn:aws:s3:::fnc-aroma-test-s3-flights/focus/*"]
+    error_message = "The focus role reads only its prefix."
+  }
+
+  assert {
+    condition = [
+      for statement in jsondecode(aws_iam_role_policy.roles["firehose_delivery"].policy).Statement :
+      statement.Condition.StringEquals["kms:EncryptionContext:aws:s3:arn"] if statement.Sid == "UseObjectsKeyThroughS3"
+    ][0] == ["arn:aws:s3:::fnc-aroma-test-s3-archive"]
+    error_message = "Firehose may use the objects key only for the archive bucket."
+  }
+
+  assert {
+    condition     = !contains([for statement in jsondecode(aws_iam_role_policy.roles["firehose_delivery"].policy).Statement : statement.Sid], "WriteDeliveryLogs")
+    error_message = "Without log groups the Firehose role holds no log permission."
+  }
+
+  assert {
+    condition     = alltrue([for purpose, exclusive in aws_iam_role_policies_exclusive.roles : exclusive.policy_names == toset([var.roles[purpose].name])])
+    error_message = "Each role must hold only its own inline policy."
+  }
+}
+
+run "lets_firehose_write_delivery_logs_when_asked" {
+  command = plan
+
+  providers = {
+    aws.project = aws.project
+  }
+
+  variables {
+    roles = merge(var.roles, { firehose_delivery = merge(var.roles.firehose_delivery, { log_group_arns = ["arn:aws:logs:us-east-1:111122223333:log-group:/aws/kinesisfirehose/fnc-aroma-test-fh-archive"] }) })
+  }
+
+  assert {
+    condition = [
+      for statement in jsondecode(aws_iam_role_policy.roles["firehose_delivery"].policy).Statement : statement.Resource if statement.Sid == "WriteDeliveryLogs"
+    ] == [["arn:aws:logs:us-east-1:111122223333:log-group:/aws/kinesisfirehose/fnc-aroma-test-fh-archive:log-stream:*"]]
+    error_message = "Firehose writes only to the streams of its log group."
   }
 }

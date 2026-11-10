@@ -28,3 +28,23 @@ resource "aws_iam_role" "roles" {
 
   tags = merge(var.additional_tags, { Name = each.value.name })
 }
+
+resource "aws_iam_role_policy" "roles" {
+  for_each = var.roles
+  provider = aws.project
+
+  name = each.value.name
+  role = aws_iam_role.roles[each.key].id
+  policy = jsonencode({
+    Version   = "2012-10-17"
+    Statement = local.role_statements[each.key]
+  })
+}
+
+resource "aws_iam_role_policies_exclusive" "roles" {
+  for_each = var.roles
+  provider = aws.project
+
+  role_name    = aws_iam_role.roles[each.key].name
+  policy_names = [aws_iam_role_policy.roles[each.key].name]
+}
