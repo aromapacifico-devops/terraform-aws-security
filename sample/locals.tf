@@ -6,6 +6,13 @@ locals {
   partition  = data.aws_partition.current.partition
   arn_tail   = "${local.region}:${local.account_id}"
 
+  table_arn      = "arn:${local.partition}:dynamodb:${local.arn_tail}:table/${local.prefix}"
+  queue_arn      = "arn:${local.partition}:sqs:${local.arn_tail}:${local.prefix}"
+  log_group_arn  = "arn:${local.partition}:logs:${local.arn_tail}:log-group:"
+  arn_tail_slash = "${local.region}/${local.account_id}"
+  push_app       = "app/GCM/${local.prefix}-push-fcm"
+  sms_config_set = "arn:${local.partition}:sms-voice:${local.arn_tail}:configuration-set/${local.prefix}-sms-alerts"
+
   keys = {
     data = {
       alias                   = "alias/${local.prefix}-kms-data"
@@ -21,12 +28,13 @@ locals {
 
   roles = {
     ingestion_function = {
-      name             = "${local.prefix}-role-ingest"
-      queue_arns       = ["arn:${local.partition}:sqs:${local.arn_tail}:${local.prefix}-sqs-ingest"]
-      write_table_arns = ["arn:${local.partition}:dynamodb:${local.arn_tail}:table/${local.prefix}-ddb-readings", "arn:${local.partition}:dynamodb:${local.arn_tail}:table/${local.prefix}-ddb-alerts"]
-      read_table_arns  = ["arn:${local.partition}:dynamodb:${local.arn_tail}:table/${local.prefix}-ddb-ranges"]
-      topic_arns       = ["arn:${local.partition}:sns:${local.arn_tail}:${local.prefix}-sns-alerts"]
-      log_group_arns   = ["arn:${local.partition}:logs:${local.arn_tail}:log-group:/aws/lambda/${local.prefix}-fn-ingest"]
+      name                  = "${local.prefix}-role-ingest"
+      queue_arns            = ["arn:${local.partition}:sqs:${local.arn_tail}:${local.prefix}-sqs-ingest"]
+      write_table_arns      = ["${local.table_arn}-ddb-readings", "${local.table_arn}-ddb-alerts"]
+      read_table_arns       = ["${local.table_arn}-ddb-ranges", "${local.table_arn}-ddb-farms"]
+      push_application_arns = ["arn:${local.partition}:sns:${local.arn_tail}:${local.push_app}"]
+      send_queue_arns       = ["${local.queue_arn}-sqs-dlvcheck"]
+      log_group_arns        = ["${local.log_group_arn}/aws/lambda/${local.prefix}-fn-ingest"]
     }
     iot_rule = {
       name        = "${local.prefix}-role-iotrule"
@@ -35,8 +43,9 @@ locals {
       source_arn  = "arn:${local.partition}:iot:${local.arn_tail}:rule/${replace(local.prefix, "-", "_")}_rule_telemetry"
     }
     firehose_delivery = {
-      name        = "${local.prefix}-role-firehose"
-      bucket_arns = ["arn:${local.partition}:s3:::${local.prefix}-s3-archive"]
+      name            = "${local.prefix}-role-firehose"
+      bucket_arns     = ["arn:${local.partition}:s3:::${local.prefix}-s3-archive"]
+      glue_table_arns = ["arn:${local.partition}:glue:${local.arn_tail}:table/${replace(local.prefix, "-", "_")}_telemetry/readings"]
     }
     focus_function = {
       name              = "${local.prefix}-role-focus"
@@ -52,6 +61,31 @@ locals {
       write_table_arns       = ["arn:${local.partition}:dynamodb:${local.arn_tail}:table/${local.prefix}-ddb-cases"]
       dead_letter_queue_arns = ["arn:${local.partition}:sqs:${local.arn_tail}:${local.prefix}-sqs-focus-dlq"]
       log_group_arns         = ["arn:${local.partition}:logs:${local.arn_tail}:log-group:/aws/lambda/${local.prefix}-fn-focus"]
+    }
+    delivery_status_function = {
+      name             = "${local.prefix}-role-dlvstat"
+      write_table_arns = ["${local.table_arn}-ddb-alerts"]
+      log_group_arns   = ["${local.log_group_arn}/aws/lambda/${local.prefix}-fn-dlvstatus"]
+    }
+    delivery_check_function = {
+      name              = "${local.prefix}-role-dlvcheck"
+      queue_arns        = ["${local.queue_arn}-sqs-dlvcheck"]
+      write_table_arns  = ["${local.table_arn}-ddb-alerts"]
+      read_table_arns   = ["${local.table_arn}-ddb-farms"]
+      sms_resource_arns = [local.sms_config_set]
+      log_group_arns    = ["${local.log_group_arn}/aws/lambda/${local.prefix}-fn-dlvcheck"]
+    }
+    push_status_logs = {
+      name = "${local.prefix}-role-pushlogs"
+      log_group_arns = [
+        "${local.log_group_arn}sns/${local.arn_tail_slash}/${local.push_app}",
+        "${local.log_group_arn}sns/${local.arn_tail_slash}/${local.push_app}/Failure",
+      ]
+    }
+    sms_status_logs = {
+      name           = "${local.prefix}-role-smslogs"
+      log_group_arns = ["${local.log_group_arn}/aws/sms/${local.prefix}-status"]
+      source_arn     = local.sms_config_set
     }
   }
 }
