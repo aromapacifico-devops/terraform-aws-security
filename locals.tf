@@ -56,4 +56,32 @@ locals {
       )
     }
   }
+
+  role_services = {
+    ingestion_function = "lambda.amazonaws.com"
+    iot_rule           = "iot.amazonaws.com"
+    firehose_delivery  = "firehose.amazonaws.com"
+    focus_function     = "lambda.amazonaws.com"
+  }
+
+  # Trust policy per role. IoT Core passes the rule ARN, so its role accepts only that rule of this
+  # account. AWS documents no such condition for Lambda execution roles or Firehose delivery roles.
+  trust_policies = {
+    for purpose, role in var.roles : purpose => {
+      Version = "2012-10-17"
+      Statement = [merge(
+        {
+          Effect    = "Allow"
+          Principal = { Service = local.role_services[purpose] }
+          Action    = "sts:AssumeRole"
+        },
+        purpose != "iot_rule" ? {} : {
+          Condition = {
+            StringEquals = { "aws:SourceAccount" = local.account_id }
+            ArnLike      = { "aws:SourceArn" = role.source_arn }
+          }
+        }
+      )]
+    }
+  }
 }

@@ -18,3 +18,13 @@ resource "aws_kms_alias" "keys" {
   name          = each.value.alias
   target_key_id = aws_kms_key.keys[each.key].key_id
 }
+
+resource "aws_iam_role" "roles" {
+  for_each = var.roles
+  provider = aws.project
+
+  name               = each.value.name
+  assume_role_policy = jsonencode(local.trust_policies[each.key])
+
+  tags = merge(var.additional_tags, { Name = each.value.name })
+}

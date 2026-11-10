@@ -280,3 +280,49 @@ run "lets_listed_services_of_this_account_use_a_key" {
     error_message = "A key without service principals must not gain a service statement."
   }
 }
+
+run "creates_four_roles_trusted_by_their_service" {
+  command = plan
+
+  providers = {
+    aws.project = aws.project
+  }
+
+  assert {
+    condition     = length(aws_iam_role.roles) == 4 && aws_iam_role.roles["iot_rule"].name == "fnc-aroma-test-role-iotrule"
+    error_message = "Each purpose must create one role with the name the root builds."
+  }
+
+  assert {
+    condition = alltrue([
+      for purpose, service in {
+        ingestion_function = "lambda.amazonaws.com"
+        iot_rule           = "iot.amazonaws.com"
+        firehose_delivery  = "firehose.amazonaws.com"
+        focus_function     = "lambda.amazonaws.com"
+      } : jsondecode(aws_iam_role.roles[purpose].assume_role_policy).Statement[0].Principal.Service == service
+    ])
+    error_message = "Each role must trust only its own service."
+  }
+
+  assert {
+    condition = jsondecode(aws_iam_role.roles["iot_rule"].assume_role_policy).Statement[0].Condition == {
+      StringEquals = { "aws:SourceAccount" = "111122223333" }
+      ArnLike      = { "aws:SourceArn" = "arn:aws:iot:us-east-1:111122223333:rule/fnc_aroma_test_rule_telemetry" }
+    }
+    error_message = "The IoT rule role must accept only the named rule of this account."
+  }
+
+  assert {
+    condition = alltrue([
+      for purpose in ["ingestion_function", "firehose_delivery", "focus_function"] :
+      !contains(keys(jsondecode(aws_iam_role.roles[purpose].assume_role_policy).Statement[0]), "Condition")
+    ])
+    error_message = "Lambda and Firehose trust policies carry no condition, as AWS documents them."
+  }
+
+  assert {
+    condition     = alltrue([for role in values(aws_iam_role.roles) : length(jsondecode(role.assume_role_policy).Statement) == 1])
+    error_message = "Each trust policy must hold a single statement."
+  }
+}
