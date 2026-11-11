@@ -267,3 +267,54 @@ variable "roles" {
     error_message = "source_arn must be the IoT topic rule ARN for iot_rule, with only letters, digits and underscores in the name, or the End User Messaging SMS configuration set ARN for sms_status_logs."
   }
 }
+
+variable "firewall" {
+  description = "Permanent cloud firewall rules of the environment. vpc_id and the subnet IDs come from the network module. open_subnet_ids are the telemetry ingress, drone ingress and application subnets, closed_subnet_ids the data, object storage, administration and public query subnets. center_cidrs are the source ranges of the linked collection centers. enable_endpoint_groups creates the groups of the interface endpoints, and follows enable_private_endpoints of the network module. Null creates nothing."
+  type = object({
+    vpc_id                 = string
+    open_subnet_ids        = list(string)
+    closed_subnet_ids      = list(string)
+    center_cidrs           = list(string)
+    enable_endpoint_groups = bool
+  })
+  default = null
+
+  validation {
+    condition     = var.firewall == null || can(regex("^vpc-[0-9a-f]{8,17}$", var.firewall.vpc_id))
+    error_message = "firewall.vpc_id must be a VPC ID such as vpc-0123456789abcdef0."
+  }
+
+  validation {
+    condition     = var.firewall == null || (length(var.firewall.open_subnet_ids) > 0 && length(var.firewall.closed_subnet_ids) > 0)
+    error_message = "firewall needs at least one open subnet and one closed subnet."
+  }
+
+  validation {
+    condition = var.firewall == null || alltrue([
+      for subnet in concat(var.firewall.open_subnet_ids, var.firewall.closed_subnet_ids) : can(regex("^subnet-[0-9a-f]{8,17}$", subnet))
+    ])
+    error_message = "firewall subnet IDs must look like subnet-0123456789abcdef0."
+  }
+
+  validation {
+    condition     = var.firewall == null || length(setintersection(var.firewall.open_subnet_ids, var.firewall.closed_subnet_ids)) == 0
+    error_message = "A subnet cannot be open and closed at the same time."
+  }
+
+  validation {
+    condition = var.firewall == null || alltrue([
+      for cidr in var.firewall.center_cidrs : try(cidrhost(cidr, 0) == split("/", cidr)[0] && tonumber(split("/", cidr)[1]) >= 16, false)
+    ])
+    error_message = "center_cidrs must be IPv4 network ranges of /16 or narrower, such as 10.41.3.0/24."
+  }
+
+  validation {
+    condition     = var.firewall == null || length(distinct(var.firewall.center_cidrs)) == length(var.firewall.center_cidrs)
+    error_message = "center_cidrs cannot repeat a range."
+  }
+
+  validation {
+    condition     = var.firewall == null || length(var.firewall.center_cidrs) <= 20
+    error_message = "center_cidrs holds at most 20 ranges, so the ACL rule numbers stay within one block."
+  }
+}

@@ -48,3 +48,8 @@ output "sms_status_logs_role_arn" {
   description = "ARN of the role End User Messaging SMS uses to write the events of its configuration set."
   value       = aws_iam_role.roles["sms_status_logs"].arn
 }
+
+output "endpoint_security_group_ids" {
+  description = "IDs of the interface endpoint security groups, keyed iot_data, s3 and private_api, for endpoint_security_group_ids of the network module. Empty while the endpoint groups are off."
+  value       = { for key, group in aws_security_group.endpoints : key => group.id }
+}
