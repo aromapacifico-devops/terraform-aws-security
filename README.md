@@ -223,20 +223,20 @@ Associating a subnet with an ACL of this module takes it out of the default ACL 
 
 ## Destroying an environment
 
-In the demonstration every environment, production included, is destroyed each night and rebuilt, so the keys carry no protection against destroy. A destroyed key waits for its deletion window before KMS removes it, and it cannot be used meanwhile. The window is 7 days in development and test and 30 in production. Aliases are deleted at once, and key names include the environment, so an environment can come back up the same day with new keys.
+In the demonstration every environment, production included, is destroyed through the pipeline when work on it stops and rebuilt when work resumes, so the keys carry no protection against destroy. A destroyed key waits for its deletion window before KMS removes it, and it cannot be used meanwhile. The window is 7 days in development and test and 30 in production. Aliases are deleted at once, and key names include the environment, so an environment can come back up the same day with new keys.
 
 ## Cost
 
 | Item | Rate | Monthly cost per environment |
 |---|---|---|
 | Customer managed keys | USD 1 per key per month, prorated hourly | USD 2.00 for two keys |
-| Automatic rotation | The first and the second rotation each add USD 1 per key per month, and later rotations add nothing | USD 0.00 while environments are rebuilt each night, since a key never reaches its first yearly rotation |
+| Automatic rotation | The first and the second rotation each add USD 1 per key per month, and later rotations add nothing | USD 0.00 while environments come down after each work session, since a key never reaches its first yearly rotation |
 | Key requests | USD 0.03 per 10,000 requests, after 20,000 free per month counted across all Regions | Depends on workload traffic. Bucket Keys and the DynamoDB key cache keep requests low, and the platform cost analysis holds the figure |
 | Key scheduled for deletion | No charge | USD 0.00 |
 | Roles and policies | No charge | USD 0.00 |
 | Security groups and network ACLs | No charge | USD 0.00 |
 
-A rebuilt environment creates new keys, and each one is billed for the hours it exists, so nightly rebuilds do not multiply the monthly figure. In a pilot that keeps its keys, a key kept for more than a year would cost USD 2 per month, and USD 3 per month after its second rotation.
+A rebuilt environment creates new keys, and each one is billed for the hours it exists, so frequent rebuilds do not multiply the monthly figure. In a pilot that keeps its keys, a key kept for more than a year would cost USD 2 per month, and USD 3 per month after its second rotation.
 
 ## Pending confirmations
 
