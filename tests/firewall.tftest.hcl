@@ -114,6 +114,11 @@ run "creates_no_firewall_by_default" {
     condition     = output.endpoint_security_group_ids == {}
     error_message = "The endpoint group map must be empty without the firewall input."
   }
+
+  assert {
+    condition     = length(aws_network_acl.open) == 0 && length(aws_network_acl.closed) == 0 && length(aws_network_acl_rule.center_in) == 0
+    error_message = "No network ACL may exist without the firewall input."
+  }
 }
 
 # Apply against the mocked provider, so the rule IDs owned by each group are known.
@@ -167,6 +172,37 @@ run "opens_endpoints_to_three_centers_on_443_only" {
     condition     = output.endpoint_security_group_ids == { for key, group in aws_security_group.endpoints : key => group.id }
     error_message = "The output must map each endpoint to its own group."
   }
+
+  assert {
+    condition     = aws_network_acl.open[0].subnet_ids == toset(var.firewall.open_subnet_ids) && aws_network_acl.closed[0].subnet_ids == toset(var.firewall.closed_subnet_ids)
+    error_message = "Each ACL must cover its own subnets."
+  }
+
+  assert {
+    condition = length(aws_network_acl_rule.center_in) == 6 && alltrue([
+      for rule in aws_network_acl_rule.center_in :
+      !rule.egress && rule.protocol == "tcp" && rule.rule_action == "allow" && rule.from_port == 443 && rule.to_port == 443 && rule.network_acl_id == aws_network_acl.open[0].id
+    ])
+    error_message = "NACL-01 must admit only TCP 443, one rule per center range, on the open ACL."
+  }
+
+  assert {
+    condition = length(aws_network_acl_rule.center_out) == 6 && alltrue([
+      for rule in aws_network_acl_rule.center_out :
+      rule.egress && rule.protocol == "tcp" && rule.rule_action == "allow" && rule.from_port == 1024 && rule.to_port == 65535 && rule.network_acl_id == aws_network_acl.open[0].id
+    ])
+    error_message = "NACL-02 must let only return traffic out to each center range."
+  }
+
+  assert {
+    condition     = toset([for rule in aws_network_acl_rule.center_in : rule.cidr_block]) == toset(var.firewall.center_cidrs) && length(distinct([for rule in aws_network_acl_rule.center_in : rule.rule_number])) == 6
+    error_message = "Each center range needs its own rule number."
+  }
+
+  assert {
+    condition     = length(aws_network_acl.closed[0].ingress) == 0 && length(aws_network_acl.closed[0].egress) == 0
+    error_message = "NACL-04 must hold no allow rule on the closed ACL."
+  }
 }
 
 run "skips_endpoint_groups_while_endpoints_are_off" {
@@ -190,6 +226,11 @@ run "skips_endpoint_groups_while_endpoints_are_off" {
   assert {
     condition     = length(aws_security_group.endpoints) == 0
     error_message = "No endpoint group may exist while the endpoints are off."
+  }
+
+  assert {
+    condition     = length(aws_network_acl.open) == 1 && length(aws_network_acl.closed) == 1 && length(aws_network_acl_rule.center_in) == 0 && length(aws_network_acl_rule.center_out) == 0
+    error_message = "With no linked center, both ACLs exist and admit nothing."
   }
 }
 

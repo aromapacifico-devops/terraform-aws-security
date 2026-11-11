@@ -456,6 +456,9 @@ locals {
     private_api = { rule = "SG-03", label = "private API endpoint" }
   } : {}
 
+  # NACL-01 and NACL-02 rule number of each center range, in input order.
+  center_rule_numbers = { for index, cidr in local.center_cidrs : cidr => 100 + index * 10 }
+
   # One ingress rule per group and center range, TCP 443 only.
   endpoint_ingress = {
     for pair in setproduct(keys(local.endpoint_groups), local.center_cidrs) :

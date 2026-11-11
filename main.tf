@@ -84,3 +84,55 @@ resource "aws_vpc_security_group_rules_exclusive" "endpoints" {
   ingress_rule_ids  = [for key, rule in aws_vpc_security_group_ingress_rule.endpoints : rule.id if local.endpoint_ingress[key].group == each.key]
   egress_rule_ids   = []
 }
+
+# Telemetry ingress, drone ingress and application subnets. NACL-03 is the final deny every network ACL ends with.
+resource "aws_network_acl" "open" {
+  count    = var.firewall == null ? 0 : 1
+  provider = aws.project
+
+  vpc_id     = var.firewall.vpc_id
+  subnet_ids = var.firewall.open_subnet_ids
+
+  tags = merge(var.additional_tags, { Name = "${local.name_prefix}-nacl-ingress" })
+}
+
+# NACL-01. HTTPS from each collection center.
+resource "aws_network_acl_rule" "center_in" {
+  for_each = local.center_rule_numbers
+  provider = aws.project
+
+  network_acl_id = aws_network_acl.open[0].id
+  rule_number    = each.value
+  egress         = false
+  protocol       = "tcp"
+  rule_action    = "allow"
+  cidr_block     = each.key
+  from_port      = 443
+  to_port        = 443
+}
+
+# NACL-02. A network ACL keeps no state, so responses return to the ephemeral ports of the center client.
+resource "aws_network_acl_rule" "center_out" {
+  for_each = local.center_rule_numbers
+  provider = aws.project
+
+  network_acl_id = aws_network_acl.open[0].id
+  rule_number    = each.value
+  egress         = true
+  protocol       = "tcp"
+  rule_action    = "allow"
+  cidr_block     = each.key
+  from_port      = 1024
+  to_port        = 65535
+}
+
+# NACL-04. Data, object storage, administration and public query subnets. No rule, so the final deny holds.
+resource "aws_network_acl" "closed" {
+  count    = var.firewall == null ? 0 : 1
+  provider = aws.project
+
+  vpc_id     = var.firewall.vpc_id
+  subnet_ids = var.firewall.closed_subnet_ids
+
+  tags = merge(var.additional_tags, { Name = "${local.name_prefix}-nacl-closed" })
+}
