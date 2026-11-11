@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.6.0]
+
 ### Added
 
 - Purpose `focus_delivery`, the role the focus rule assumes to put each published flight record on the work queue of the function. It trusts EventBridge from this account and the named rule only, sends to that queue and uses the data key through SQS.
