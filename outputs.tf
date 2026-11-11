@@ -29,6 +29,11 @@ output "focus_function_role_arn" {
   value       = aws_iam_role.roles["focus_function"].arn
 }
 
+output "focus_delivery_role_arn" {
+  description = "ARN of the role the focus confirmation rule uses to reach its work queue."
+  value       = aws_iam_role.roles["focus_delivery"].arn
+}
+
 output "delivery_status_function_role_arn" {
   description = "ARN of the delivery status function role."
   value       = aws_iam_role.roles["delivery_status_function"].arn

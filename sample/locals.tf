@@ -58,9 +58,15 @@ locals {
         "arn:${local.partition}:bedrock:us-east-2::foundation-model/amazon.nova-2-lite-v1:0",
         "arn:${local.partition}:bedrock:us-west-2::foundation-model/amazon.nova-2-lite-v1:0",
       ]
-      write_table_arns       = ["arn:${local.partition}:dynamodb:${local.arn_tail}:table/${local.prefix}-ddb-cases"]
-      dead_letter_queue_arns = ["arn:${local.partition}:sqs:${local.arn_tail}:${local.prefix}-sqs-focus-dlq"]
-      log_group_arns         = ["arn:${local.partition}:logs:${local.arn_tail}:log-group:/aws/lambda/${local.prefix}-fn-focus"]
+      write_table_arns = ["arn:${local.partition}:dynamodb:${local.arn_tail}:table/${local.prefix}-ddb-cases"]
+      queue_arns       = ["${local.queue_arn}-sqs-focus"]
+      event_bus_arns   = ["arn:${local.partition}:events:${local.arn_tail}:event-bus/${local.prefix}-evb-platform"]
+      log_group_arns   = ["arn:${local.partition}:logs:${local.arn_tail}:log-group:/aws/lambda/${local.prefix}-fn-focus"]
+    }
+    focus_delivery = {
+      name       = "${local.prefix}-role-focusdlv"
+      queue_arns = ["${local.queue_arn}-sqs-focus"]
+      source_arn = "arn:${local.partition}:events:${local.arn_tail}:rule/${local.prefix}-evb-platform/${local.prefix}-evr-focus"
     }
     delivery_status_function = {
       name             = "${local.prefix}-role-dlvstat"

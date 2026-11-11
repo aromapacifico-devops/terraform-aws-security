@@ -71,14 +71,20 @@ variables {
       glue_table_arns = ["arn:aws:glue:us-east-1:111122223333:table/fnc_aroma_test_telemetry/readings"]
     }
     focus_function = {
-      name                   = "fnc-aroma-test-role-focus"
-      bucket_arns            = ["arn:aws:s3:::fnc-aroma-test-s3-flights"]
-      object_prefix          = "focus/"
-      restricted_prefix      = "restricted/"
-      model_arns             = ["arn:aws:bedrock:us-east-1:111122223333:inference-profile/us.amazon.nova-2-lite-v1:0", "arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-2-lite-v1:0"]
-      write_table_arns       = ["arn:aws:dynamodb:us-east-1:111122223333:table/fnc-aroma-test-ddb-cases"]
-      dead_letter_queue_arns = ["arn:aws:sqs:us-east-1:111122223333:fnc-aroma-test-sqs-focus-dlq"]
-      log_group_arns         = ["arn:aws:logs:us-east-1:111122223333:log-group:/aws/lambda/fnc-aroma-test-fn-focus"]
+      name              = "fnc-aroma-test-role-focus"
+      bucket_arns       = ["arn:aws:s3:::fnc-aroma-test-s3-flights"]
+      object_prefix     = "focus/"
+      restricted_prefix = "restricted/"
+      model_arns        = ["arn:aws:bedrock:us-east-1:111122223333:inference-profile/us.amazon.nova-2-lite-v1:0", "arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-2-lite-v1:0"]
+      write_table_arns  = ["arn:aws:dynamodb:us-east-1:111122223333:table/fnc-aroma-test-ddb-cases"]
+      queue_arns        = ["arn:aws:sqs:us-east-1:111122223333:fnc-aroma-test-sqs-focus"]
+      event_bus_arns    = ["arn:aws:events:us-east-1:111122223333:event-bus/fnc-aroma-test-evb-platform"]
+      log_group_arns    = ["arn:aws:logs:us-east-1:111122223333:log-group:/aws/lambda/fnc-aroma-test-fn-focus"]
+    }
+    focus_delivery = {
+      name       = "fnc-aroma-test-role-focusdlv"
+      queue_arns = ["arn:aws:sqs:us-east-1:111122223333:fnc-aroma-test-sqs-focus"]
+      source_arn = "arn:aws:events:us-east-1:111122223333:rule/fnc-aroma-test-evb-platform/fnc-aroma-test-evr-focus"
     }
     delivery_status_function = {
       name             = "fnc-aroma-test-role-dlvstat"
@@ -322,7 +328,7 @@ run "lets_listed_services_of_this_account_use_a_key" {
   }
 }
 
-run "creates_eight_roles_trusted_by_their_service" {
+run "creates_nine_roles_trusted_by_their_service" {
   command = plan
 
   providers = {
@@ -330,7 +336,7 @@ run "creates_eight_roles_trusted_by_their_service" {
   }
 
   assert {
-    condition     = length(aws_iam_role.roles) == 8 && aws_iam_role.roles["iot_rule"].name == "fnc-aroma-test-role-iotrule"
+    condition     = length(aws_iam_role.roles) == 9 && aws_iam_role.roles["iot_rule"].name == "fnc-aroma-test-role-iotrule"
     error_message = "Each purpose must create one role with the name the root builds."
   }
 
@@ -341,6 +347,7 @@ run "creates_eight_roles_trusted_by_their_service" {
         iot_rule                 = "iot.amazonaws.com"
         firehose_delivery        = "firehose.amazonaws.com"
         focus_function           = "lambda.amazonaws.com"
+        focus_delivery           = "events.amazonaws.com"
         delivery_status_function = "lambda.amazonaws.com"
         delivery_check_function  = "lambda.amazonaws.com"
         push_status_logs         = "sns.amazonaws.com"
@@ -356,6 +363,14 @@ run "creates_eight_roles_trusted_by_their_service" {
       ArnLike      = { "aws:SourceArn" = "arn:aws:iot:us-east-1:111122223333:rule/fnc_aroma_test_rule_telemetry" }
     }
     error_message = "The IoT rule role must accept only the named rule of this account."
+  }
+
+  assert {
+    condition = jsondecode(aws_iam_role.roles["focus_delivery"].assume_role_policy).Statement[0].Condition == {
+      StringEquals = { "aws:SourceAccount" = "111122223333" }
+      ArnLike      = { "aws:SourceArn" = "arn:aws:events:us-east-1:111122223333:rule/fnc-aroma-test-evb-platform/fnc-aroma-test-evr-focus" }
+    }
+    error_message = "The focus delivery role must accept only the focus rule of this account."
   }
 
   assert {
@@ -514,6 +529,7 @@ run "exposes_key_and_role_arns" {
       output.iot_rule_role_arn == aws_iam_role.roles["iot_rule"].arn &&
       output.firehose_role_arn == aws_iam_role.roles["firehose_delivery"].arn &&
       output.focus_function_role_arn == aws_iam_role.roles["focus_function"].arn &&
+      output.focus_delivery_role_arn == aws_iam_role.roles["focus_delivery"].arn &&
       output.delivery_status_function_role_arn == aws_iam_role.roles["delivery_status_function"].arn &&
       output.delivery_check_function_role_arn == aws_iam_role.roles["delivery_check_function"].arn &&
       output.push_status_logs_role_arn == aws_iam_role.roles["push_status_logs"].arn &&
@@ -526,9 +542,9 @@ run "exposes_key_and_role_arns" {
     condition = length(toset([
       output.ingestion_function_role_arn, output.iot_rule_role_arn, output.firehose_role_arn, output.focus_function_role_arn,
       output.delivery_status_function_role_arn, output.delivery_check_function_role_arn, output.push_status_logs_role_arn,
-      output.sms_status_logs_role_arn,
-    ])) == 8
-    error_message = "Role outputs must be eight different roles."
+      output.sms_status_logs_role_arn, output.focus_delivery_role_arn,
+    ])) == 9
+    error_message = "Role outputs must be nine different roles."
   }
 }
 
@@ -720,6 +736,109 @@ run "rejects_a_firehose_role_without_a_glue_table" {
 
   variables {
     roles = merge(var.roles, { firehose_delivery = merge(var.roles.firehose_delivery, { glue_table_arns = [] }) })
+  }
+
+  expect_failures = [var.roles]
+}
+
+run "lets_the_focus_function_work_from_its_queue" {
+  command = plan
+
+  providers = {
+    aws.project = aws.project
+  }
+
+  assert {
+    condition = [
+      for statement in jsondecode(aws_iam_role_policy.roles["focus_function"].policy).Statement : statement.Resource if statement.Sid == "ConsumeWorkQueue"
+    ] == [["arn:aws:sqs:us-east-1:111122223333:fnc-aroma-test-sqs-focus"]]
+    error_message = "The focus role consumes only its work queue."
+  }
+
+  assert {
+    condition = !contains(flatten([
+      for statement in jsondecode(aws_iam_role_policy.roles["focus_function"].policy).Statement : statement.Action
+    ]), "sqs:SendMessage")
+    error_message = "The focus role sends to no queue, since SQS moves exhausted messages to the dead letter queue."
+  }
+
+  assert {
+    condition = [
+      for statement in jsondecode(aws_iam_role_policy.roles["focus_function"].policy).Statement : statement.Action if statement.Sid == "ReadAndRemoveFlightObjects"
+    ] == [["s3:DeleteObject", "s3:DeleteObjectVersion", "s3:GetObjectVersion"]]
+    error_message = "The focus role reads exact versions and removes them, with no read of the latest version."
+  }
+
+  assert {
+    condition = [
+      for statement in jsondecode(aws_iam_role_policy.roles["focus_function"].policy).Statement : statement.Action if statement.Sid == "UseDataKeyThroughSqs"
+    ] == [["kms:Decrypt"]]
+    error_message = "Receiving from the encrypted queue needs only decrypt."
+  }
+
+  assert {
+    condition = [
+      for statement in jsondecode(aws_iam_role_policy.roles["focus_function"].policy).Statement : statement if statement.Sid == "PublishInferenceCompleted"
+      ][0] == {
+      Sid       = "PublishInferenceCompleted"
+      Effect    = "Allow"
+      Action    = ["events:PutEvents"]
+      Resource  = ["arn:aws:events:us-east-1:111122223333:event-bus/fnc-aroma-test-evb-platform"]
+      Condition = { StringEquals = { "events:detail-type" = "inference.completed" } }
+    }
+    error_message = "The focus role publishes only inference.completed on the platform bus."
+  }
+
+  assert {
+    condition     = [for statement in jsondecode(aws_iam_role_policy.roles["focus_delivery"].policy).Statement : statement.Sid] == ["SendToWorkQueue", "UseDataKeyThroughSqs"]
+    error_message = "The delivery role only sends to the work queue and uses the data key through SQS."
+  }
+
+  assert {
+    condition = [
+      for statement in jsondecode(aws_iam_role_policy.roles["focus_delivery"].policy).Statement : statement.Resource if statement.Sid == "SendToWorkQueue"
+    ] == [["arn:aws:sqs:us-east-1:111122223333:fnc-aroma-test-sqs-focus"]]
+    error_message = "The delivery role sends only to the focus work queue."
+  }
+}
+
+run "rejects_a_focus_role_without_its_work_queue" {
+  command = plan
+
+  providers = {
+    aws.project = aws.project
+  }
+
+  variables {
+    roles = merge(var.roles, { focus_function = merge(var.roles.focus_function, { queue_arns = [] }) })
+  }
+
+  expect_failures = [var.roles]
+}
+
+run "rejects_a_delivery_role_bound_to_another_service" {
+  command = plan
+
+  providers = {
+    aws.project = aws.project
+  }
+
+  variables {
+    roles = merge(var.roles, { focus_delivery = merge(var.roles.focus_delivery, { source_arn = "arn:aws:iot:us-east-1:111122223333:rule/fnc_aroma_test_rule_telemetry" }) })
+  }
+
+  expect_failures = [var.roles]
+}
+
+run "rejects_an_event_bus_wildcard" {
+  command = plan
+
+  providers = {
+    aws.project = aws.project
+  }
+
+  variables {
+    roles = merge(var.roles, { focus_function = merge(var.roles.focus_function, { event_bus_arns = ["arn:aws:events:us-east-1:111122223333:event-bus/*"] }) })
   }
 
   expect_failures = [var.roles]
