@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.5.0]
+
 ### Added
 
 - Optional input `firewall` with the permanent cloud firewall rules of box C06. One security group per interface endpoint admits TCP 443 from each center range and holds no egress rule, and the module owns the full rule set of each group. A network ACL on the ingress and application subnets admits TCP 443 from the centers and lets the responses out, and a second ACL closes the data, object storage, administration and public query subnets.
