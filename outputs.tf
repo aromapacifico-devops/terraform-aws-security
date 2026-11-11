@@ -1,4 +1,6 @@
 # Outputs of the module. Each one exposes a single attribute and has a description.
+# Role ARNs wait for the role policy, so a consumer that checks permissions at creation, such as a
+# Lambda event source mapping, never sees a role without them.
 output "data_key_arn" {
   description = "ARN of the data key, for the DynamoDB tables."
   value       = aws_kms_key.keys["data"].arn
@@ -12,46 +14,55 @@ output "objects_key_arn" {
 output "ingestion_function_role_arn" {
   description = "ARN of the ingestion function role."
   value       = aws_iam_role.roles["ingestion_function"].arn
+  depends_on  = [aws_iam_role_policy.roles]
 }
 
 output "iot_rule_role_arn" {
   description = "ARN of the IoT rule role."
   value       = aws_iam_role.roles["iot_rule"].arn
+  depends_on  = [aws_iam_role_policy.roles]
 }
 
 output "firehose_role_arn" {
   description = "ARN of the Firehose delivery role."
   value       = aws_iam_role.roles["firehose_delivery"].arn
+  depends_on  = [aws_iam_role_policy.roles]
 }
 
 output "focus_function_role_arn" {
   description = "ARN of the focus confirmation function role."
   value       = aws_iam_role.roles["focus_function"].arn
+  depends_on  = [aws_iam_role_policy.roles]
 }
 
 output "focus_delivery_role_arn" {
   description = "ARN of the role the focus confirmation rule uses to reach its work queue."
   value       = aws_iam_role.roles["focus_delivery"].arn
+  depends_on  = [aws_iam_role_policy.roles]
 }
 
 output "delivery_status_function_role_arn" {
   description = "ARN of the delivery status function role."
   value       = aws_iam_role.roles["delivery_status_function"].arn
+  depends_on  = [aws_iam_role_policy.roles]
 }
 
 output "delivery_check_function_role_arn" {
   description = "ARN of the delivery check function role."
   value       = aws_iam_role.roles["delivery_check_function"].arn
+  depends_on  = [aws_iam_role_policy.roles]
 }
 
 output "push_status_logs_role_arn" {
   description = "ARN of the role SNS uses to write push delivery status, for the success and failure feedback of each platform application."
   value       = aws_iam_role.roles["push_status_logs"].arn
+  depends_on  = [aws_iam_role_policy.roles]
 }
 
 output "sms_status_logs_role_arn" {
   description = "ARN of the role End User Messaging SMS uses to write the events of its configuration set."
   value       = aws_iam_role.roles["sms_status_logs"].arn
+  depends_on  = [aws_iam_role_policy.roles]
 }
 
 output "endpoint_security_group_ids" {

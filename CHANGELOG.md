@@ -11,6 +11,7 @@
 
 - The focus confirmation function role consumes its work queue, reads exact object versions, removes object versions and puts `inference.completed` events on the platform bus. It no longer reads the latest version of an object.
 - The focus confirmation function role uses the data key through SQS for decrypt only.
+- Role ARN outputs wait for the role policy, so an event source mapping created from them finds its permissions in place.
 - `roles` requires the purpose `focus_delivery`, and `focus_function` requires `queue_arns` and `event_bus_arns`.
 
 ### Removed
