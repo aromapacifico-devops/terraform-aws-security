@@ -40,7 +40,8 @@ Box C05 is the keys and the platform roles, including the roles of alert deliver
 | Ingestion function role | Reads the queue, writes readings and alerts, reads ranges and farms, publishes alerts to the phones of a farm and queues a delivery check |
 | IoT rule role | Sends to one queue and one delivery stream |
 | Firehose delivery role | Reads the archive schema and writes Parquet files to the telemetry archive |
-| Focus confirmation function role | Reads one bucket prefix, detects labels, moves objects with a person to the restricted prefix, invokes one model and writes results |
+| Focus confirmation function role | Consumes its work queue, reads exact object versions of one bucket prefix, detects labels, moves objects with a person to the restricted prefix, invokes one model, writes results and announces each one on the platform bus |
+| Focus delivery role | Lets the focus rule put each published flight record on the work queue of the function |
 | Delivery status function role | Writes the push and SMS status of each alert, finding it through the index on the message identifier |
 | Delivery check function role | Reads the delay queue, checks each alert after 5 minutes and sends the SMS of an urgent alert |
 | Push status logs role | Lets SNS write the success and failure status of each push |
@@ -83,12 +84,13 @@ The module owns the actions of every role, and the root only names the targets. 
 | | | Put, get and abort multipart uploads of objects | Archive bucket objects |
 | | | Get location, list objects and multipart uploads | Archive bucket |
 | | | Put log events, only when a log group is given | Its delivery log group |
-| Focus confirmation function | Lambda | Get and delete objects | Focus prefix of the flight object bucket |
+| Focus confirmation function | Lambda | Receive and delete messages, read queue attributes | Its work queue |
+| | | Get object versions, delete objects and object versions | Focus prefix of the flight object bucket |
 | | | Put objects | Restricted prefix of the same bucket |
 | | | Detect labels | Any, as IAM requires |
 | | | Invoke model | Nova 2 Lite inference profile and its foundation model in the Regions the profile routes to |
 | | | Put items | Cases table |
-| | | Send messages | Its dead letter queue |
+| | | Put events whose detail type is `inference.completed` | Platform event bus |
 | | | Create log streams and put log events | Its own log group |
 | Delivery status function | Lambda | Get and update items | Alerts table |
 | | | Query | Indexes of the alerts table |
@@ -99,6 +101,7 @@ The module owns the actions of every role, and the root only names the targets. 
 | | | Send text messages | SMS configuration set and origination identities |
 | | | Create log streams and put log events | Its own log group |
 | Push status logs | SNS | Create log groups, create log streams and put log events | Success and failure log groups of each platform application |
+| Focus delivery | EventBridge, from this account and the named rule only | Send messages | Work queue of the focus function |
 | SMS status logs | End User Messaging SMS, from this account and the named configuration set only | Describe and create log streams, put log events | SMS status log group |
 
 Key use is granted per service. A role may use the data key only through SQS or DynamoDB, and the objects key only through S3. For S3 the encryption context must also be the bucket the role works with, which is the bucket ARN because buckets use S3 Bucket Keys.
@@ -108,7 +111,8 @@ Key use is granted per service. A role may use the data key only through SQS or 
 | Ingestion function | Decrypt and generate data key through SQS. Decrypt, encrypt, generate data key and describe through DynamoDB | None |
 | IoT rule | Decrypt and generate data key through SQS | None |
 | Firehose delivery | None | Decrypt and generate data key through S3, archive bucket only |
-| Focus confirmation function | Decrypt, encrypt, generate data key and describe through DynamoDB. Decrypt and generate data key through SQS | Decrypt and generate data key through S3, flight object bucket only |
+| Focus confirmation function | Decrypt, encrypt, generate data key and describe through DynamoDB. Decrypt through SQS | Decrypt and generate data key through S3, flight object bucket only |
+| Focus delivery | Decrypt and generate data key through SQS | None |
 | Delivery status function | Decrypt, encrypt, generate data key and describe through DynamoDB | None |
 | Delivery check function | Decrypt through SQS. Decrypt, encrypt, generate data key and describe through DynamoDB | None |
 
@@ -116,13 +120,15 @@ Key use is granted per service. A role may use the data key only through SQS or 
 
 **Policies built as data.** Policies are Terraform objects in `locals.tf`, rendered with `jsonencode`. The tests read every action, resource and condition at plan time with no AWS account, so "no global permissions" is a tested property. The usual policy document data source would give random text under the test mock, and least privilege could then only be read by eye.
 
-**Fixed purposes.** `roles` accepts exactly eight purposes. The root names targets, and validation rejects an unknown purpose, a missing target, a target the purpose does not use, any wildcard in an ARN and a role name longer than 28 characters. A generic map of statements was discarded, because each environment root would then hold its own permissions and least privilege would be reviewed three times.
+**Fixed purposes.** `roles` accepts exactly nine purposes. The root names targets, and validation rejects an unknown purpose, a missing target, a target the purpose does not use, any wildcard in an ARN and a role name longer than 28 characters. A generic map of statements was discarded, because each environment root would then hold its own permissions and least privilege would be reviewed three times.
 
 **Key policy.** Each key policy holds the account root statement of the AWS default key policy, so IAM policies decide who uses the key. A key may also list AWS service principals, which can use it only for this account. Naming the roles in the key policy was discarded, because it would repeat what the role policies say and tie the key to the roles.
 
-**Trust conditions.** The IoT rule role requires this account and the named topic rule as source, as AWS recommends for IoT Core, and the SMS status logs role requires this account and the named configuration set, as AWS recommends for End User Messaging SMS. AWS documents no source condition for Lambda execution roles, Firehose delivery roles or SNS delivery status roles, and adding one that the service does not send would stop it from assuming the role.
+**Trust conditions.** The IoT rule role requires this account and the named topic rule as source, as AWS recommends for IoT Core, the focus delivery role requires this account and the named EventBridge rule, as AWS recommends for roles that rules assume, and the SMS status logs role requires this account and the named configuration set, as AWS recommends for End User Messaging SMS. AWS documents no source condition for Lambda execution roles, Firehose delivery roles or SNS delivery status roles, and adding one that the service does not send would stop it from assuming the role.
 
 **Objects with a person.** Rekognition runs before any analysis, and when it finds a person the function copies the object to the restricted prefix and deletes the original, so the object never reaches the model. The role may write only to the restricted prefix and delete only in its own prefix. It cannot read the restricted prefix, which stays reserved to the platform operator.
+
+**Work from a queue.** The focus function starts from a published flight record, which the focus rule puts on its work queue through the focus delivery role. The function reads only the exact object versions the record names, so it holds no permission to read the latest version of an object. SQS moves a message that keeps failing to the dead letter queue by its own redrive policy, so the function role sends to no queue. Its event permission is limited to the `inference.completed` detail type on the platform bus.
 
 **Alerts go to endpoints.** The ingestion function publishes each alert straight to the phone endpoints of a farm, which SNS creates under a platform application. The role names the endpoints of each application with `endpoint/<platform>/<application>/*`, derived from the application ARN, since endpoints appear when a farmer registers a phone. The alert delivery design publishes to the endpoints of the farm, so the role holds no topic.
 
@@ -170,7 +176,7 @@ The root builds the names of every resource, so it also knows their ARNs. It pas
 | `client`, `project`, `environment` | `string` | Yes | Codes for names and tags. `environment` is `dev`, `test` or `prod` |
 | `additional_tags` | `map(string)` | No | Tags added on top of the provider default tags |
 | `keys` | `map(object)` | Yes | Exactly `data` and `objects`, each with `alias`, `description`, `deletion_window_in_days` (7 to 30, default 30) and optional `service_principals` |
-| `roles` | `map(object)` | Yes | Exactly the eight purposes below, each with `name` and its targets |
+| `roles` | `map(object)` | Yes | Exactly the nine purposes below, each with `name` and its targets |
 | `firewall` | `object` | No | `vpc_id`, `open_subnet_ids`, `closed_subnet_ids`, `center_cidrs` and `enable_endpoint_groups`. Default `null` creates no firewall resource |
 
 | Purpose | Required targets | Optional targets |
@@ -178,13 +184,14 @@ The root builds the names of every resource, so it also knows their ARNs. It pas
 | `ingestion_function` | `queue_arns`, `write_table_arns`, `read_table_arns`, `push_application_arns`, `send_queue_arns`, `log_group_arns` | None |
 | `iot_rule` | `queue_arns`, `stream_arns`, `source_arn` | None |
 | `firehose_delivery` | `bucket_arns`, `glue_table_arns` | `log_group_arns` |
-| `focus_function` | `bucket_arns`, `object_prefix`, `restricted_prefix`, `model_arns`, `write_table_arns`, `dead_letter_queue_arns`, `log_group_arns` | None |
+| `focus_function` | `queue_arns`, `bucket_arns`, `object_prefix`, `restricted_prefix`, `model_arns`, `write_table_arns`, `event_bus_arns`, `log_group_arns` | None |
+| `focus_delivery` | `queue_arns`, `source_arn` | None |
 | `delivery_status_function` | `write_table_arns`, `log_group_arns` | None |
 | `delivery_check_function` | `queue_arns`, `write_table_arns`, `read_table_arns`, `sms_resource_arns`, `log_group_arns` | None |
 | `push_status_logs` | `log_group_arns` | None |
 | `sms_status_logs` | `log_group_arns`, `source_arn` | None |
 
-ARNs are complete, with no wildcard. Bucket ARNs carry no object path, log group ARNs carry no trailing `:*`, and both prefixes end with `/`. The focus and restricted prefixes may not contain each other, so a moved object never lands where the function reads. IoT rule names accept only letters, digits and underscores, so the `source_arn` of `iot_rule` uses names such as `fnc_aroma_dev_rule_telemetry`. The `source_arn` of `sms_status_logs` is the SMS configuration set, which `sms_resource_arns` must also include. Push applications are platform application ARNs, `app/GCM/<name>` or `app/APNS/<name>`, and Glue tables are `table/<database>/<table>`.
+ARNs are complete, with no wildcard. Bucket ARNs carry no object path, log group ARNs carry no trailing `:*`, and both prefixes end with `/`. The focus and restricted prefixes may not contain each other, so a moved object never lands where the function reads. IoT rule names accept only letters, digits and underscores, so the `source_arn` of `iot_rule` uses names such as `fnc_aroma_dev_rule_telemetry`. The `source_arn` of `focus_delivery` is the rule ARN, which on a custom bus reads `rule/<bus>/<rule>`. The `source_arn` of `sms_status_logs` is the SMS configuration set, which `sms_resource_arns` must also include. Push applications are platform application ARNs, `app/GCM/<name>` or `app/APNS/<name>`, and Glue tables are `table/<database>/<table>`.
 
 In `firewall`, each center range is a network address of /16 or narrower with no host bits, up to 20 ranges with no repeats, so `0.0.0.0/0` is rejected. A subnet may be open or closed, never both, and each list needs at least one subnet. `enable_endpoint_groups` follows `enable_private_endpoints` of the network module, since the groups exist only while the endpoints do.
 
@@ -198,6 +205,7 @@ In `firewall`, each center range is a network address of /16 or narrower with no
 | `iot_rule_role_arn` | ARN of the IoT rule role |
 | `firehose_role_arn` | ARN of the Firehose delivery role |
 | `focus_function_role_arn` | ARN of the focus confirmation function role |
+| `focus_delivery_role_arn` | ARN of the role the focus rule uses to reach its work queue |
 | `delivery_status_function_role_arn` | ARN of the delivery status function role |
 | `delivery_check_function_role_arn` | ARN of the delivery check function role |
 | `push_status_logs_role_arn` | ARN of the role SNS uses for the success and failure feedback of each platform application |
@@ -243,7 +251,7 @@ A rebuilt environment creates new keys, and each one is billed for the hours it 
 | Item | Current choice | If it is wrong |
 |---|---|---|
 | KMS actions a role needs to read and write items in a table under a customer managed key | Decrypt, encrypt, generate data key and describe, through DynamoDB | Calls fail with an access error, or a role holds an action it does not use. A test against the real service in the development environment settles it |
-| How Rekognition reads an encrypted object | The focus role holds get object and decrypt on its prefix, which covers both reading the object itself and passing its S3 location | No change for either path |
+| How Rekognition reads an encrypted object | The focus role holds get object version and decrypt on its prefix, which covers reading an exact version itself and passing its S3 location with the version | The first call in the development environment fails with an access error and the read statement adds the action Rekognition needs |
 | Workload encryption | Queues and tables use the data key, buckets use the objects key | The KMS statements of the affected role name another key |
 | Publish scoped to endpoint ARNs | The service reference lists only topics as the resource of `sns:Publish`, and the role names the endpoints of each application | A publish fails with an access error in the first deployment, and the statement moves to the resource `*` with an exception record |
 | SNS push status log groups | Named `sns/<region>/<account>/app/<platform>/<application>` and the same name with `/Failure`, and the role is scoped to them where the AWS example uses all log groups | SNS writes no status and the role names the groups SNS really uses |

@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Added
+
+- Purpose `focus_delivery`, the role the focus rule assumes to put each published flight record on the work queue of the function. It trusts EventBridge from this account and the named rule only, sends to that queue and uses the data key through SQS.
+- Inputs `event_bus_arns` and output `focus_delivery_role_arn`.
+
+### Changed
+
+- The focus confirmation function role consumes its work queue, reads exact object versions, removes object versions and puts `inference.completed` events on the platform bus. It no longer reads the latest version of an object.
+- The focus confirmation function role uses the data key through SQS for decrypt only.
+- `roles` requires the purpose `focus_delivery`, and `focus_function` requires `queue_arns` and `event_bus_arns`.
+
+### Removed
+
+- `dead_letter_queue_arns` and the send permission of the focus role on its dead letter queue, since SQS redrives exhausted messages by itself.
+
 ## [0.5.0]
 
 ### Added
