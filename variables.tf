@@ -86,29 +86,29 @@ variable "keys" {
 }
 
 variable "roles" {
-  description = "Platform roles keyed by purpose (ingestion_function, iot_rule, firehose_delivery, focus_function, delivery_status_function, delivery_check_function, push_status_logs, sms_status_logs), with the final role name and the ARNs each role may reach. The module owns the actions of each purpose."
+  description = "Platform roles keyed by purpose (ingestion_function, iot_rule, firehose_delivery, focus_function, focus_delivery, delivery_status_function, delivery_check_function, push_status_logs, sms_status_logs), with the final role name and the ARNs each role may reach. The module owns the actions of each purpose."
   type = map(object({
-    name                   = string
-    queue_arns             = optional(list(string), [])
-    write_table_arns       = optional(list(string), [])
-    read_table_arns        = optional(list(string), [])
-    send_queue_arns        = optional(list(string), [])
-    push_application_arns  = optional(list(string), [])
-    glue_table_arns        = optional(list(string), [])
-    sms_resource_arns      = optional(list(string), [])
-    stream_arns            = optional(list(string), [])
-    bucket_arns            = optional(list(string), [])
-    object_prefix          = optional(string)
-    restricted_prefix      = optional(string)
-    model_arns             = optional(list(string), [])
-    dead_letter_queue_arns = optional(list(string), [])
-    log_group_arns         = optional(list(string), [])
-    source_arn             = optional(string)
+    name                  = string
+    queue_arns            = optional(list(string), [])
+    write_table_arns      = optional(list(string), [])
+    read_table_arns       = optional(list(string), [])
+    send_queue_arns       = optional(list(string), [])
+    push_application_arns = optional(list(string), [])
+    glue_table_arns       = optional(list(string), [])
+    sms_resource_arns     = optional(list(string), [])
+    stream_arns           = optional(list(string), [])
+    bucket_arns           = optional(list(string), [])
+    object_prefix         = optional(string)
+    restricted_prefix     = optional(string)
+    model_arns            = optional(list(string), [])
+    event_bus_arns        = optional(list(string), [])
+    log_group_arns        = optional(list(string), [])
+    source_arn            = optional(string)
   }))
 
   validation {
     condition     = toset(keys(var.roles)) == toset(keys(local.role_targets))
-    error_message = "roles must hold exactly the purposes ingestion_function, iot_rule, firehose_delivery, focus_function, delivery_status_function, delivery_check_function, push_status_logs and sms_status_logs."
+    error_message = "roles must hold exactly the purposes ingestion_function, iot_rule, firehose_delivery, focus_function, focus_delivery, delivery_status_function, delivery_check_function, push_status_logs and sms_status_logs."
   }
 
   validation {
@@ -138,11 +138,20 @@ variable "roles" {
   validation {
     condition = alltrue(flatten([
       for role in values(var.roles) : [
-        for arn in concat(role.queue_arns, role.send_queue_arns, role.dead_letter_queue_arns) :
+        for arn in concat(role.queue_arns, role.send_queue_arns) :
         can(regex("^arn:aws[a-z-]*:sqs:[a-z0-9-]+:[0-9]{12}:[A-Za-z0-9_-]{1,80}(\\.fifo)?$", arn))
       ]
     ]))
-    error_message = "queue_arns, send_queue_arns and dead_letter_queue_arns must be full SQS queue ARNs with no wildcard."
+    error_message = "queue_arns and send_queue_arns must be full SQS queue ARNs with no wildcard."
+  }
+
+  validation {
+    condition = alltrue(flatten([
+      for role in values(var.roles) : [
+        for arn in role.event_bus_arns : can(regex("^arn:aws[a-z-]*:events:[a-z0-9-]+:[0-9]{12}:event-bus/[A-Za-z0-9._-]{1,256}$", arn))
+      ]
+    ]))
+    error_message = "event_bus_arns must be full EventBridge event bus ARNs with no wildcard."
   }
 
   validation {
@@ -260,11 +269,12 @@ variable "roles" {
       for purpose, role in var.roles :
       role.source_arn == null || (
         purpose == "iot_rule" ? can(regex("^arn:aws[a-z-]*:iot:[a-z0-9-]+:[0-9]{12}:rule/[A-Za-z0-9_]{1,128}$", role.source_arn)) :
+        purpose == "focus_delivery" ? can(regex("^arn:aws[a-z-]*:events:[a-z0-9-]+:[0-9]{12}:rule/([A-Za-z0-9._-]{1,256}/)?[A-Za-z0-9._-]{1,64}$", role.source_arn)) :
         purpose == "sms_status_logs" ? can(regex("^arn:aws[a-z-]*:sms-voice:[a-z0-9-]+:[0-9]{12}:configuration-set/[A-Za-z0-9_-]{1,64}$", role.source_arn)) :
         false
       )
     ])
-    error_message = "source_arn must be the IoT topic rule ARN for iot_rule, with only letters, digits and underscores in the name, or the End User Messaging SMS configuration set ARN for sms_status_logs."
+    error_message = "source_arn must be the IoT topic rule ARN for iot_rule, with only letters, digits and underscores in the name, the EventBridge rule ARN for focus_delivery, or the End User Messaging SMS configuration set ARN for sms_status_logs."
   }
 }
 

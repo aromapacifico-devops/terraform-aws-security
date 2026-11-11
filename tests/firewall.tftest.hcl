@@ -61,14 +61,20 @@ variables {
       glue_table_arns = ["arn:aws:glue:us-east-1:111122223333:table/fnc_aroma_test_telemetry/readings"]
     }
     focus_function = {
-      name                   = "fnc-aroma-test-role-focus"
-      bucket_arns            = ["arn:aws:s3:::fnc-aroma-test-s3-flights"]
-      object_prefix          = "focus/"
-      restricted_prefix      = "restricted/"
-      model_arns             = ["arn:aws:bedrock:us-east-1:111122223333:inference-profile/us.amazon.nova-2-lite-v1:0", "arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-2-lite-v1:0"]
-      write_table_arns       = ["arn:aws:dynamodb:us-east-1:111122223333:table/fnc-aroma-test-ddb-cases"]
-      dead_letter_queue_arns = ["arn:aws:sqs:us-east-1:111122223333:fnc-aroma-test-sqs-focus-dlq"]
-      log_group_arns         = ["arn:aws:logs:us-east-1:111122223333:log-group:/aws/lambda/fnc-aroma-test-fn-focus"]
+      name              = "fnc-aroma-test-role-focus"
+      bucket_arns       = ["arn:aws:s3:::fnc-aroma-test-s3-flights"]
+      object_prefix     = "focus/"
+      restricted_prefix = "restricted/"
+      model_arns        = ["arn:aws:bedrock:us-east-1:111122223333:inference-profile/us.amazon.nova-2-lite-v1:0", "arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-2-lite-v1:0"]
+      write_table_arns  = ["arn:aws:dynamodb:us-east-1:111122223333:table/fnc-aroma-test-ddb-cases"]
+      queue_arns        = ["arn:aws:sqs:us-east-1:111122223333:fnc-aroma-test-sqs-focus"]
+      event_bus_arns    = ["arn:aws:events:us-east-1:111122223333:event-bus/fnc-aroma-test-evb-platform"]
+      log_group_arns    = ["arn:aws:logs:us-east-1:111122223333:log-group:/aws/lambda/fnc-aroma-test-fn-focus"]
+    }
+    focus_delivery = {
+      name       = "fnc-aroma-test-role-focusdlv"
+      queue_arns = ["arn:aws:sqs:us-east-1:111122223333:fnc-aroma-test-sqs-focus"]
+      source_arn = "arn:aws:events:us-east-1:111122223333:rule/fnc-aroma-test-evb-platform/fnc-aroma-test-evr-focus"
     }
     delivery_status_function = {
       name             = "fnc-aroma-test-role-dlvstat"

@@ -15,8 +15,12 @@ locals {
       allowed  = ["bucket_arns", "glue_table_arns", "log_group_arns"]
     }
     focus_function = {
-      required = ["bucket_arns", "object_prefix", "restricted_prefix", "model_arns", "write_table_arns", "dead_letter_queue_arns", "log_group_arns"]
-      allowed  = ["bucket_arns", "object_prefix", "restricted_prefix", "model_arns", "write_table_arns", "dead_letter_queue_arns", "log_group_arns"]
+      required = ["queue_arns", "bucket_arns", "object_prefix", "restricted_prefix", "model_arns", "write_table_arns", "event_bus_arns", "log_group_arns"]
+      allowed  = ["queue_arns", "bucket_arns", "object_prefix", "restricted_prefix", "model_arns", "write_table_arns", "event_bus_arns", "log_group_arns"]
+    }
+    focus_delivery = {
+      required = ["queue_arns", "source_arn"]
+      allowed  = ["queue_arns", "source_arn"]
     }
     delivery_status_function = {
       required = ["write_table_arns", "log_group_arns"]
@@ -78,16 +82,18 @@ locals {
     iot_rule                 = "iot.amazonaws.com"
     firehose_delivery        = "firehose.amazonaws.com"
     focus_function           = "lambda.amazonaws.com"
+    focus_delivery           = "events.amazonaws.com"
     delivery_status_function = "lambda.amazonaws.com"
     delivery_check_function  = "lambda.amazonaws.com"
     push_status_logs         = "sns.amazonaws.com"
     sms_status_logs          = "sms-voice.amazonaws.com"
   }
 
-  # Purposes whose service passes the ARN of the resource acting for it. IoT Core passes the rule, and
-  # End User Messaging SMS passes the configuration set, so those roles accept only that resource of
-  # this account. AWS documents no such condition for Lambda, Firehose or SNS delivery status roles.
-  source_bound = ["iot_rule", "sms_status_logs"]
+  # Purposes whose service passes the ARN of the resource acting for it. IoT Core and EventBridge pass
+  # the rule, and End User Messaging SMS passes the configuration set, so those roles accept only that
+  # resource of this account. AWS documents no such condition for Lambda, Firehose or SNS delivery
+  # status roles.
+  source_bound = ["iot_rule", "focus_delivery", "sms_status_logs"]
 
   # Trust policy per role.
   trust_policies = {
@@ -116,6 +122,7 @@ locals {
   iot_rule  = var.roles["iot_rule"]
   firehose  = var.roles["firehose_delivery"]
   focus     = var.roles["focus_function"]
+  delivery  = var.roles["focus_delivery"]
   status    = var.roles["delivery_status_function"]
   check     = var.roles["delivery_check_function"]
   push_logs = var.roles["push_status_logs"]
@@ -261,10 +268,17 @@ locals {
 
     focus_function = [
       {
-        # An object with a person is copied to the restricted prefix and deleted from the focus prefix.
+        Sid      = "ConsumeWorkQueue"
+        Effect   = "Allow"
+        Action   = ["sqs:DeleteMessage", "sqs:GetQueueAttributes", "sqs:ReceiveMessage"]
+        Resource = local.focus.queue_arns
+      },
+      {
+        # The function reads the exact version the flight record names. An object with a person is
+        # copied to the restricted prefix, then that version is removed from the focus prefix.
         Sid      = "ReadAndRemoveFlightObjects"
         Effect   = "Allow"
-        Action   = ["s3:DeleteObject", "s3:GetObject"]
+        Action   = ["s3:DeleteObject", "s3:DeleteObjectVersion", "s3:GetObjectVersion"]
         Resource = [for arn in local.focus.bucket_arns : "${arn}/${local.focus.object_prefix}*"]
       },
       {
@@ -312,10 +326,34 @@ locals {
         Condition = { StringEquals = { "kms:ViaService" = local.via["dynamodb"] } }
       },
       {
-        Sid      = "SendToDeadLetterQueue"
+        Sid       = "UseDataKeyThroughSqs"
+        Effect    = "Allow"
+        Action    = ["kms:Decrypt"]
+        Resource  = [local.key_arns["data"]]
+        Condition = { StringEquals = { "kms:ViaService" = local.via["sqs"] } }
+      },
+      {
+        Sid       = "PublishInferenceCompleted"
+        Effect    = "Allow"
+        Action    = ["events:PutEvents"]
+        Resource  = local.focus.event_bus_arns
+        Condition = { StringEquals = { "events:detail-type" = "inference.completed" } }
+      },
+      {
+        Sid      = "WriteOwnLogs"
+        Effect   = "Allow"
+        Action   = ["logs:CreateLogStream", "logs:PutLogEvents"]
+        Resource = [for arn in local.focus.log_group_arns : "${arn}:*"]
+      },
+    ]
+
+    # Role the EventBridge rule assumes to put each published flight record on the work queue.
+    focus_delivery = [
+      {
+        Sid      = "SendToWorkQueue"
         Effect   = "Allow"
         Action   = ["sqs:SendMessage"]
-        Resource = local.focus.dead_letter_queue_arns
+        Resource = local.delivery.queue_arns
       },
       {
         Sid       = "UseDataKeyThroughSqs"
@@ -323,12 +361,6 @@ locals {
         Action    = ["kms:Decrypt", "kms:GenerateDataKey"]
         Resource  = [local.key_arns["data"]]
         Condition = { StringEquals = { "kms:ViaService" = local.via["sqs"] } }
-      },
-      {
-        Sid      = "WriteOwnLogs"
-        Effect   = "Allow"
-        Action   = ["logs:CreateLogStream", "logs:PutLogEvents"]
-        Resource = [for arn in local.focus.log_group_arns : "${arn}:*"]
       },
     ]
 
