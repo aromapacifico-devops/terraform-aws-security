@@ -2,7 +2,7 @@
 
 Platform identities, encryption keys and permanent cloud firewall rules of one Aroma Pacifico environment. Other modules create no role, key or security group, so they receive identifiers from this one, and each permission can be reviewed in a single place. It implements boxes C05 and C06 of the implementation scope.
 
-The current release creates the keys and the platform roles of box C05, including the roles of alert delivery. The endpoint security groups of box C06 arrive in a later minor release, together with the inputs they need.
+Box C05 is the keys and the platform roles, including the roles of alert delivery. Box C06, "Firewall de nube", is the permanent rules of the firewall matrix in `docs/security/firewall-policy.md` of the documentation repository. They are created only when the root passes `firewall`.
 
 ## Contents
 
@@ -13,7 +13,7 @@ The current release creates the keys and the platform roles of box C05, includin
 - [Usage](#usage)
 - [Inputs](#inputs)
 - [Outputs](#outputs)
-- [Endpoint security groups](#endpoint-security-groups)
+- [Cloud firewall](#cloud-firewall)
 - [Destroying an environment](#destroying-an-environment)
 - [Cost](#cost)
 - [Pending confirmations](#pending-confirmations)
@@ -28,6 +28,8 @@ The current release creates the keys and the platform roles of box C05, includin
 | Trust policy | Policy of a role that says which service may assume it |
 | Confused deputy | A service acting for another account or resource than the one intended. Source conditions in a trust policy prevent it |
 | `kms:ViaService` | Condition that lets a role use a key only through the named AWS service, such as DynamoDB or S3 |
+| Network ACL | Stateless filter of a subnet. It checks each packet both ways and ends with a deny |
+| Center source ranges | The logistics range `10.X.3.0/24` and the local server range `10.X.10.0/24` of each linked center |
 
 ## What it creates
 
@@ -43,8 +45,11 @@ The current release creates the keys and the platform roles of box C05, includin
 | Delivery check function role | Reads the delay queue, checks each alert after 5 minutes and sends the SMS of an urgent alert |
 | Push status logs role | Lets SNS write the success and failure status of each push |
 | SMS status logs role | Lets End User Messaging SMS write the events of its configuration set |
+| Endpoint security groups (SG-01 to SG-04) | One group per interface endpoint, IoT Core data, S3 and private API. TCP 443 from each center range and no egress |
+| Ingress network ACL (NACL-01 to NACL-03) | On the telemetry ingress, drone ingress and application subnets. TCP 443 in from each center range, return traffic out to it, deny for everything else |
+| Closed network ACL (NACL-04) | On the data, object storage, administration and public query subnets. No allow rule |
 
-Each key has an alias, yearly rotation and an explicit key policy. Each role has one inline policy, and Terraform removes any other inline policy that appears on it.
+Each key has an alias, yearly rotation and an explicit key policy. Each role has one inline policy, and Terraform removes any other inline policy that appears on it. In the same way, each endpoint group holds only the rules of this module, and a rule added in the console disappears at the next apply.
 
 ## What it leaves to other places
 
@@ -54,6 +59,10 @@ Each key has an alias, yearly rotation and an explicit key policy. Each role has
 | Pipeline roles | Bootstrap and pipeline of the infrastructure repository | A pipeline cannot create the role it needs in order to run |
 | VPN tunnel keys | Secret that AWS creates with the connection | The code declares no secret |
 | Human access | Landing zone design | The code covers platform identities only |
+| Default security group with no rules (SG-05) | Network module | It belongs to the VPC |
+| Routes to the centers and the VPN | Network module | The ACLs only filter what the routes bring |
+| Center firewall rules | Installation template of each center | They run on the center equipment |
+| Temporary rules | The change process of the firewall policy | They are opened and closed by hand with an expiry |
 | Queues, tables, platform applications, configuration sets, streams, buckets, Glue tables and log groups | Workload modules | This module only names them in policies |
 
 ## Permissions of each role
@@ -123,11 +132,11 @@ Key use is granted per service. A role may use the data key only through SQS or 
 
 ## Usage
 
-Use the latest released tag in place of `v0.4.0`.
+Use the latest released tag in place of `v0.5.0`.
 
 ```hcl
 module "security" {
-  source = "git::https://github.com/aromapacifico-devops/terraform-aws-security.git?ref=v0.4.0"
+  source = "git::https://github.com/aromapacifico-devops/terraform-aws-security.git?ref=v0.5.0"
 
   providers = {
     aws.project = aws.principal
@@ -139,8 +148,18 @@ module "security" {
 
   keys  = local.keys
   roles = local.roles
+
+  firewall = {
+    vpc_id                 = module.network.vpc_id
+    open_subnet_ids        = local.open_subnet_ids
+    closed_subnet_ids      = local.closed_subnet_ids
+    center_cidrs           = local.center_cidrs
+    enable_endpoint_groups = var.enable_private_endpoints
+  }
 }
 ```
+
+The network module receives `module.security.endpoint_security_group_ids` for its interface endpoints. Terraform resolves both directions resource by resource, so the two calls form no cycle.
 
 The root builds the names of every resource, so it also knows their ARNs. It passes them inside `roles`, which lets a role name the queue or table it reaches without waiting for the workload module to create them. `sample/locals.tf` shows the full structure for one environment.
 
@@ -152,6 +171,7 @@ The root builds the names of every resource, so it also knows their ARNs. It pas
 | `additional_tags` | `map(string)` | No | Tags added on top of the provider default tags |
 | `keys` | `map(object)` | Yes | Exactly `data` and `objects`, each with `alias`, `description`, `deletion_window_in_days` (7 to 30, default 30) and optional `service_principals` |
 | `roles` | `map(object)` | Yes | Exactly the eight purposes below, each with `name` and its targets |
+| `firewall` | `object` | No | `vpc_id`, `open_subnet_ids`, `closed_subnet_ids`, `center_cidrs` and `enable_endpoint_groups`. Default `null` creates no firewall resource |
 
 | Purpose | Required targets | Optional targets |
 |---|---|---|
@@ -165,6 +185,8 @@ The root builds the names of every resource, so it also knows their ARNs. It pas
 | `sms_status_logs` | `log_group_arns`, `source_arn` | None |
 
 ARNs are complete, with no wildcard. Bucket ARNs carry no object path, log group ARNs carry no trailing `:*`, and both prefixes end with `/`. The focus and restricted prefixes may not contain each other, so a moved object never lands where the function reads. IoT rule names accept only letters, digits and underscores, so the `source_arn` of `iot_rule` uses names such as `fnc_aroma_dev_rule_telemetry`. The `source_arn` of `sms_status_logs` is the SMS configuration set, which `sms_resource_arns` must also include. Push applications are platform application ARNs, `app/GCM/<name>` or `app/APNS/<name>`, and Glue tables are `table/<database>/<table>`.
+
+In `firewall`, each center range is a network address of /16 or narrower with no host bits, up to 20 ranges with no repeats, so `0.0.0.0/0` is rejected. A subnet may be open or closed, never both, and each list needs at least one subnet. `enable_endpoint_groups` follows `enable_private_endpoints` of the network module, since the groups exist only while the endpoints do.
 
 ## Outputs
 
@@ -180,10 +202,24 @@ ARNs are complete, with no wildcard. Bucket ARNs carry no object path, log group
 | `delivery_check_function_role_arn` | ARN of the delivery check function role |
 | `push_status_logs_role_arn` | ARN of the role SNS uses for the success and failure feedback of each platform application |
 | `sms_status_logs_role_arn` | ARN of the role End User Messaging SMS uses for the event destination of its configuration set |
+| `endpoint_security_group_ids` | Group IDs keyed `iot_data`, `s3` and `private_api`, for the network module. Empty while the groups are off |
 
-## Endpoint security groups
+## Cloud firewall
 
-A later minor release adds the security groups of the interface endpoints, with default deny and TCP 443 from the logistics and local server ranges of the centers. It adds the inputs `vpc_id` and `center_source_cidrs` and the output `endpoint_security_group_ids`. Only rules marked as permanent in the firewall matrix become code, each as a separate resource, which gives every rule its own identity in a plan.
+Only rules marked permanent in the firewall matrix become code. Each rule is its own resource, so a plan shows every one by name and range.
+
+| Rule | Resource | What it allows |
+|---|---|---|
+| SG-01 to SG-03 | `aws_vpc_security_group_ingress_rule.endpoints` | TCP 443 from each center range to the IoT Core data, S3 and private API endpoints |
+| SG-04 | `aws_security_group.endpoints` with no egress, and `aws_vpc_security_group_rules_exclusive.endpoints` | Nothing out. Terraform removes the default egress rule of a new group, and the exclusive resource keeps egress empty |
+| NACL-01 | `aws_network_acl_rule.center_in` | TCP 443 in from each center range, rule numbers from 100 in steps of 10 |
+| NACL-02 | `aws_network_acl_rule.center_out` | TCP 1024 to 65535 out to each center range, which carries the responses |
+| NACL-03 | `aws_network_acl.open` | Nothing else, through the final deny of the ACL |
+| NACL-04 | `aws_network_acl.closed` | Nothing, since it holds no rule |
+
+An environment with no linked center gets both ACLs and no allow rule, so its subnets admit nothing. Rule numbers follow the order of `center_cidrs`, so adding a center at the end leaves the existing rules in place. The root builds that list from the linked centers in a fixed order.
+
+Associating a subnet with an ACL of this module takes it out of the default ACL of the VPC. Destroying the module returns it there.
 
 ## Destroying an environment
 
@@ -198,6 +234,7 @@ In the demonstration every environment, production included, is destroyed each n
 | Key requests | USD 0.03 per 10,000 requests, after 20,000 free per month counted across all Regions | Depends on workload traffic. Bucket Keys and the DynamoDB key cache keep requests low, and the platform cost analysis holds the figure |
 | Key scheduled for deletion | No charge | USD 0.00 |
 | Roles and policies | No charge | USD 0.00 |
+| Security groups and network ACLs | No charge | USD 0.00 |
 
 A rebuilt environment creates new keys, and each one is billed for the hours it exists, so nightly rebuilds do not multiply the monthly figure. In a pilot that keeps its keys, a key kept for more than a year would cost USD 2 per month, and USD 3 per month after its second rotation.
 
@@ -221,17 +258,17 @@ A rebuilt environment creates new keys, and each one is billed for the hours it 
 | PC-IAC-002 Variables | Every input has a type, description and validation. `keys` and `roles` are `map(object)` with `optional()` and cross-field checks |
 | PC-IAC-004 Tags | Each resource sets `Name` plus `additional_tags`, on top of the provider default tags |
 | PC-IAC-005 Providers | Every resource and data source uses `aws.project` from the caller |
-| PC-IAC-010 `for_each` | Keys, aliases, roles and policies iterate over maps. No `prevent_destroy`, see exceptions |
+| PC-IAC-010 `for_each` | Keys, aliases, roles, policies, groups and rules iterate over maps. Each ACL uses `count` on the optional input. No `prevent_destroy`, see exceptions |
 | PC-IAC-011 Data sources | Only generic ones for account, Region and partition |
 | PC-IAC-016 Secrets | No secret input, value or output |
 | PC-IAC-020 Security | Rotating keys, least privilege per role, the single resource `*` recorded as an exception |
-| PC-IAC-023 Own service | Only KMS and IAM resources |
+| PC-IAC-023 Own service | Only KMS, IAM and VPC filtering resources. The VPC, subnets and endpoints stay in the network module |
 | PC-IAC-025 Names | The root passes every final name. The module adds none |
 | PC-IAC-026 Sample | `tfvars`, variables, data, locals, then the module call |
 
 ## Develop and test
 
-The exact Terraform version lives in `.terraform-version`. Tests run against a mocked provider, so they need no AWS account and spend no credits. They cover the validations, the key policies, the trust policies, every permission statement and the outputs.
+The exact Terraform version lives in `.terraform-version`. Tests run against a mocked provider, so they need no AWS account and spend no credits. They cover the validations, the key policies, the trust policies, every permission statement, the firewall rules and the outputs. The firewall tests run in `tests/firewall.tftest.hcl`.
 
 ```bash
 terraform init -backend=false
@@ -262,6 +299,8 @@ Commits follow Conventional Commits, and they decide the next version. A `fix` r
 | S3 encryption context and Bucket Keys | https://docs.aws.amazon.com/AmazonS3/latest/userguide/UsingKMSEncryption.html |
 | Bedrock inference profile permissions | https://docs.aws.amazon.com/bedrock/latest/userguide/inference-profiles-prereq.html |
 | KMS prices and deletion | https://aws.amazon.com/kms/pricing/, https://docs.aws.amazon.com/kms/latest/developerguide/deleting-keys.html |
+| Default egress removal, exclusive rules, network ACL rules | AWS provider 6.72.0 documentation of `aws_security_group`, `aws_vpc_security_group_rules_exclusive` and `aws_network_acl_rule` |
+| Network ACLs are stateless, and 1024 to 65535 covers the ephemeral ports of clients | https://docs.aws.amazon.com/vpc/latest/userguide/custom-network-acl.html |
 
 ## Related repositories
 
