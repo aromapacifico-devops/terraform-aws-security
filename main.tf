@@ -51,6 +51,7 @@ resource "aws_iam_role_policies_exclusive" "roles" {
 
 # SG-04. No egress block, so Terraform removes the default allow-all egress rule of each new group.
 resource "aws_security_group" "endpoints" {
+  #checkov:skip=CKV2_AWS_5:The network module attaches the groups to its interface endpoints, see docs/iac-exceptions.md
   for_each = local.endpoint_groups
   provider = aws.project
 
@@ -87,6 +88,7 @@ resource "aws_vpc_security_group_rules_exclusive" "endpoints" {
 
 # Telemetry ingress, drone ingress and application subnets. NACL-03 is the final deny every network ACL ends with.
 resource "aws_network_acl" "open" {
+  #checkov:skip=CKV2_AWS_1:Subnets attach through the subnet IDs the network module passes in, see docs/iac-exceptions.md
   count    = var.firewall == null ? 0 : 1
   provider = aws.project
 
@@ -128,6 +130,7 @@ resource "aws_network_acl_rule" "center_out" {
 
 # NACL-04. Data, object storage, administration and public query subnets. No rule, so the final deny holds.
 resource "aws_network_acl" "closed" {
+  #checkov:skip=CKV2_AWS_1:Subnets attach through the subnet IDs the network module passes in, see docs/iac-exceptions.md
   count    = var.firewall == null ? 0 : 1
   provider = aws.project
 
