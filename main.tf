@@ -48,3 +48,39 @@ resource "aws_iam_role_policies_exclusive" "roles" {
   role_name    = aws_iam_role.roles[each.key].name
   policy_names = [aws_iam_role_policy.roles[each.key].name]
 }
+
+# SG-04. No egress block, so Terraform removes the default allow-all egress rule of each new group.
+resource "aws_security_group" "endpoints" {
+  for_each = local.endpoint_groups
+  provider = aws.project
+
+  name        = "${local.name_prefix}-sg-vpce-${replace(each.key, "_", "-")}"
+  description = "${each.value.rule} ${each.value.label}, TCP 443 from the collection centers only"
+  vpc_id      = var.firewall.vpc_id
+
+  tags = merge(var.additional_tags, { Name = "${local.name_prefix}-sg-vpce-${replace(each.key, "_", "-")}" })
+}
+
+resource "aws_vpc_security_group_ingress_rule" "endpoints" {
+  for_each = local.endpoint_ingress
+  provider = aws.project
+
+  security_group_id = aws_security_group.endpoints[each.value.group].id
+  description       = "${local.endpoint_groups[each.value.group].rule} HTTPS from collection center ${each.value.cidr}"
+  ip_protocol       = "tcp"
+  from_port         = 443
+  to_port           = 443
+  cidr_ipv4         = each.value.cidr
+
+  tags = merge(var.additional_tags, { Name = "${local.name_prefix}-sgr-vpce-${replace(each.value.group, "_", "-")}" })
+}
+
+# Rules added outside this module are removed at the next apply. Egress stays empty (SG-04).
+resource "aws_vpc_security_group_rules_exclusive" "endpoints" {
+  for_each = local.endpoint_groups
+  provider = aws.project
+
+  security_group_id = aws_security_group.endpoints[each.key].id
+  ingress_rule_ids  = [for key, rule in aws_vpc_security_group_ingress_rule.endpoints : rule.id if local.endpoint_ingress[key].group == each.key]
+  egress_rule_ids   = []
+}

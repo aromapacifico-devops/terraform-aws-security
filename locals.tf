@@ -442,3 +442,23 @@ locals {
     ]
   }
 }
+
+# Permanent cloud firewall rules of docs/security/firewall-policy.md.
+locals {
+  name_prefix = "${var.client}-${var.project}-${var.environment}"
+
+  center_cidrs = try(var.firewall.center_cidrs, [])
+
+  # SG-01 to SG-03. One group per interface endpoint, present only while the endpoints are.
+  endpoint_groups = try(var.firewall.enable_endpoint_groups, false) ? {
+    iot_data    = { rule = "SG-01", label = "IoT Core data endpoint" }
+    s3          = { rule = "SG-02", label = "S3 interface endpoint" }
+    private_api = { rule = "SG-03", label = "private API endpoint" }
+  } : {}
+
+  # One ingress rule per group and center range, TCP 443 only.
+  endpoint_ingress = {
+    for pair in setproduct(keys(local.endpoint_groups), local.center_cidrs) :
+    "${pair[0]} ${pair[1]}" => { group = pair[0], cidr = pair[1] }
+  }
+}
